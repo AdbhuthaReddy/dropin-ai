@@ -1,0 +1,21 @@
+﻿# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+.npm/
+
+# Python / FastAPI
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+backend/datasheets/*.pdf
+
+# Environments
+.env
+.env.local
+.venv
+env/
+venv/
+ENV/
