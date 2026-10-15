@@ -42,6 +42,8 @@ if os.path.exists(datasheet_dir):
 class SAPLineDownWebhook(BaseModel):
     erp_system: str = Field(default="SAP S/4HANA", description="Originating ERP system identifier")
     target_mpn: str = Field(description="Target manufacturer part number experiencing line-down shortage")
+    target_description: str = Field(default="Unknown Component", description="Human-readable component description to anchor AI search context and prevent SMD top-marking code confusion")
+    search_mode: str = Field(default="exact", description="Search mode: 'exact' to find original MPN stock, or 'alternative' to engineer drop-in replacement")
     inventory_level: int = Field(default=0, description="Current stock level in ERP inventory")
     factory_location: Optional[str] = Field(default="Foxconn HYD-Plant 1", description="Assembly facility location")
     plant_id: Optional[str] = Field(default="HYD-01", description="Plant / facility code")
@@ -49,7 +51,10 @@ class SAPLineDownWebhook(BaseModel):
 
 
 class ERPWritebackResponse(BaseModel):
-    workflow_route: str = Field(default="ALTERNATIVE_ENGINEERED", description="Workflow route taken: EXACT_ORIGINAL_PROCURED or ALTERNATIVE_ENGINEERED")
+    workflow_route: str = Field(
+        default="ALTERNATIVE_ENGINEERED",
+        description="Must be 'EXACT_ORIGINAL_PROCURED', 'ALTERNATIVE_ENGINEERED', or 'OEM_CUSTOM_ESCALATION'"
+    )
     action_buy_url: str = Field(default="", description="Valid purchase URL on DigiKey, Mouser, Avnet, or manufacturer")
     search_reasoning: str = Field(default="", description="2-sentence summary of the real-world manufacturer and specs found online BEFORE candidate_mpn")
     original_mpn: str
@@ -95,17 +100,30 @@ async def handle_sap_line_down(webhook: SAPLineDownWebhook) -> ERPWritebackRespo
 
     try:
         # Step 1: Execute live multi-agent sequential pipeline
-        verdict: AgentHardwareVerdict = await evaluate_component_shortage(webhook.target_mpn)
+        result = await evaluate_component_shortage(
+            webhook.target_mpn, 
+            webhook.target_description,
+            webhook.search_mode
+        )
+        verdict: AgentHardwareVerdict = result
 
         # Step 2: Auto-PO Generation based on confidence score & AML authorization
-        if verdict.aml_authorization and verdict.confidence_score >= 0.85:
+        if verdict.workflow_route == "OEM_CUSTOM_ESCALATION":
+            po_number = None
+            procurement_status = "OEM_CUSTOM_ESCALATION"
+            msg = (
+                f"OEM Escalation Required: {webhook.target_mpn} is a proprietary custom component. "
+                "Commercial off-the-shelf drop-in replacements do not exist. Escalated to OEM engineering team."
+            )
+        elif verdict.aml_authorization and verdict.confidence_score >= 0.85:
             po_number = f"PO-SAP-{random.randint(400000, 999999)}"
             procurement_status = "AUTOMATIC_PO_DISPATCHED"
+            dist_name = verdict.distributor_quote.distributor if verdict.distributor_quote else "Distributor"
+            stock_qty = f"{verdict.distributor_quote.stock_available:,}" if verdict.distributor_quote else "25,000"
             msg = (
                 f"AML Authorized: {verdict.candidate_mpn} validated as drop-in replacement for {webhook.target_mpn} "
                 f"({verdict.confidence_score * 100:.1f}% confidence via Google Search Grounding - Route: {verdict.workflow_route}). "
-                f"Autonomous EDI Purchase Order {po_number} dispatched to {verdict.distributor_quote.distributor} "
-                f"({verdict.distributor_quote.stock_available:,} units available)."
+                f"Autonomous EDI Purchase Order {po_number} dispatched to {dist_name} ({stock_qty} units available)."
             )
         else:
             po_number = None

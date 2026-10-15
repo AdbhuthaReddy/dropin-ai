@@ -109,13 +109,15 @@ export default function ERPSimulatorPage() {
     setIsDispatching(true);
     setWritebackResponse(null);
     setToToastMessage(
-      `Webhook Dispatched to External AI Agent for ${activeTargetItem.mpn}. Awaiting AML Authorization...`
+      `Autonomous Pipeline Dispatched for ${activeTargetItem.mpn}. Awaiting AML Authorization...`
     );
 
     const payload = {
       erp_system: "SAP S/4HANA",
       plant_id: "HYD-01",
       target_mpn: activeTargetItem.mpn,
+      target_description: activeTargetItem.description,
+      search_mode: "alternative",
       inventory_level: activeTargetItem.stock,
       lead_time_weeks: parseInt(activeTargetItem.leadTime) || 12
     };
@@ -148,9 +150,9 @@ export default function ERPSimulatorPage() {
         );
       }
     } catch (err: any) {
-      console.error("Webhook dispatch error:", err);
+      console.error("Autonomous Pipeline error:", err);
       setToToastMessage(
-        "Webhook dispatch error: Unable to connect to DropIn.ai agent on localhost:8080. Ensure backend is active."
+        "Autonomous Pipeline error: Unable to connect to DropIn.ai agent on localhost:8080. Ensure backend is active."
       );
     } finally {
       setIsDispatching(false);
@@ -243,15 +245,12 @@ export default function ERPSimulatorPage() {
             <ChevronRight className="w-3 h-3" />
             <span>Plant HYD-01 (Foxconn Hyderabad)</span>
             <ChevronRight className="w-3 h-3" />
-            <span className="text-[#333333] font-semibold">10-Part mBOM Stock Monitor</span>
+            <span className="text-[#333333] font-semibold">Stock Monitor</span>
           </div>
           <div className="flex items-center gap-3">
             <h2 className="text-[16px] font-bold text-[#222222]">
-              Stock Overview & Safety Threshold Monitor: Pixel Buds Pro 2 (GA03201)
+              Stock Overview & Safety Threshold Monitor: Pixel Buds Pro 2 (GRVCC)
             </h2>
-            <span className="bg-[#eaf3fc] text-[#0a6ed1] text-[10px] font-semibold px-2 py-0.5 border border-[#b8dbf9]">
-              BI-DIRECTIONAL TWIN ACTIVE
-            </span>
           </div>
         </div>
 
@@ -369,7 +368,7 @@ export default function ERPSimulatorPage() {
                   )}
 
                   <p className="text-[11px] text-[#777777] mt-1.5">
-                    Automated Rule: Dispatch webhook with target MPN to DropIn.ai agentic middleware for immediate secondary market cross-reference & AML verification.
+                    Automated Rule: Trigger Autonomous Pipeline with target MPN for immediate secondary market cross-reference & AML verification.
                   </p>
                 </div>
               </div>
@@ -385,12 +384,12 @@ export default function ERPSimulatorPage() {
                   {isDispatching ? (
                     <>
                       <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Transmitting Webhook...</span>
+                      <span>Running Autonomous Pipeline...</span>
                     </>
                   ) : (
                     <>
                       <Share2 className="w-3.5 h-3.5" />
-                      <span>Dispatch Webhook for {activeTargetItem.mpn}</span>
+                      <span>Trigger Autonomous Pipeline for {activeTargetItem.mpn}</span>
                     </>
                   )}
                 </button>
@@ -484,11 +483,17 @@ export default function ERPSimulatorPage() {
                     </h4>
                     {writebackResponse.workflow_route && (
                       <span className={`px-2 py-0.5 text-[9px] font-bold font-mono tracking-wider uppercase border ${
-                        writebackResponse.workflow_route === 'EXACT_ORIGINAL_PROCURED'
+                        writebackResponse.workflow_route === 'OEM_CUSTOM_ESCALATION'
+                          ? 'text-orange-600 bg-orange-50 border-orange-200'
+                          : writebackResponse.workflow_route === 'EXACT_ORIGINAL_PROCURED'
                           ? 'bg-[#e8f5e9] text-[#2e7d32] border-[#a5d6a7]'
                           : 'bg-[#e3f2fd] text-[#0a6ed1] border-[#90caf9]'
                       }`}>
-                        {writebackResponse.workflow_route === 'EXACT_ORIGINAL_PROCURED' ? 'Exact OEM Procured' : 'Alternative Engineered'}
+                        {writebackResponse.workflow_route === 'OEM_CUSTOM_ESCALATION'
+                          ? 'OEM ESCALATION REQUIRED'
+                          : writebackResponse.workflow_route === 'EXACT_ORIGINAL_PROCURED'
+                          ? 'Exact OEM Procured'
+                          : 'Alternative Engineered'}
                       </span>
                     )}
                   </div>
@@ -496,7 +501,11 @@ export default function ERPSimulatorPage() {
                     Execution Status:{" "}
                     <span
                       className={`font-bold ${
-                        writebackResponse.aml_authorization ? "text-[#2e7d32]" : "text-[#c62828]"
+                        writebackResponse.workflow_route === 'OEM_CUSTOM_ESCALATION'
+                          ? "text-orange-600"
+                          : writebackResponse.aml_authorization
+                          ? "text-[#2e7d32]"
+                          : "text-[#c62828]"
                       }`}
                     >
                       {writebackResponse.procurement_status}
@@ -523,8 +532,12 @@ export default function ERPSimulatorPage() {
                 <span className="font-bold text-[#333333]">{writebackResponse.original_mpn}</span>
               </div>
               <div>
-                <span className="text-[10px] uppercase text-[#777777] font-semibold block">Procured / Drop-In Replacement</span>
-                <span className="font-bold text-[#0a6ed1]">{writebackResponse.candidate_mpn}</span>
+                <span className="text-[10px] uppercase text-[#777777] font-semibold block">
+                  {writebackResponse.workflow_route === 'OEM_CUSTOM_ESCALATION' ? 'Escalation Status' : 'Procured / Drop-In Replacement'}
+                </span>
+                <span className={`font-bold ${writebackResponse.workflow_route === 'OEM_CUSTOM_ESCALATION' ? 'text-orange-600' : 'text-[#0a6ed1]'}`}>
+                  {writebackResponse.candidate_mpn}
+                </span>
               </div>
               <div>
                 <span className="text-[10px] uppercase text-[#777777] font-semibold block">AI Confidence Score</span>
@@ -535,7 +548,9 @@ export default function ERPSimulatorPage() {
               <div>
                 <span className="text-[10px] uppercase text-[#777777] font-semibold block">Procurement Channel</span>
                 <span className="font-bold text-[#333333]">
-                  {writebackResponse.distributor_quote?.distributor || "DigiKey / Mouser Global"}
+                  {writebackResponse.workflow_route === 'OEM_CUSTOM_ESCALATION'
+                    ? 'Direct OEM Escalation'
+                    : writebackResponse.distributor_quote?.distributor || "DigiKey / Mouser Global"}
                 </span>
               </div>
             </div>
@@ -552,18 +567,32 @@ export default function ERPSimulatorPage() {
 
             {/* ACTIONABLE HIGHLY VISIBLE PROCUREMENT BUTTON */}
             {writebackResponse.action_buy_url && (
-              <div className="mb-3 p-3 bg-[#e8f0fe] border border-[#d2e3fc] flex flex-wrap items-center justify-between gap-3">
+              <div className={`mb-3 p-3 ${
+                writebackResponse.workflow_route === 'OEM_CUSTOM_ESCALATION'
+                  ? 'bg-[#fff3e0] border-[#ffe0b2]'
+                  : 'bg-[#e8f0fe] border-[#d2e3fc]'
+              } border flex flex-wrap items-center justify-between gap-3`}>
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="text-[11px] font-bold text-[#1967d2] uppercase tracking-wider">
-                      Verified Distributor Inventory Channel:
-                    </span>
-                    <span className="text-[11px] text-[#137333] font-bold font-mono">
-                      {writebackResponse.distributor_quote?.stock_available ? `${writebackResponse.distributor_quote.stock_available.toLocaleString()} Units In Stock` : "Immediate Stock Available"}
-                    </span>
+                    {writebackResponse.workflow_route === 'OEM_CUSTOM_ESCALATION' ? (
+                      <span className="text-[11px] font-bold text-[#e65100] uppercase tracking-wider">
+                        Proprietary Custom Component - Commercial Sourcing Unavailable
+                      </span>
+                    ) : (
+                      <>
+                        <span className="text-[11px] font-bold text-[#1967d2] uppercase tracking-wider">
+                          Verified Distributor Inventory Channel:
+                        </span>
+                        <span className="text-[11px] text-[#137333] font-bold font-mono">
+                          {writebackResponse.distributor_quote?.stock_available ? `${writebackResponse.distributor_quote.stock_available.toLocaleString()} Units In Stock` : "Immediate Stock Available"}
+                        </span>
+                      </>
+                    )}
                   </div>
                   <p className="text-[10px] text-[#5f6368] font-mono mt-0.5">
-                    Catalog Direct URL: {writebackResponse.action_buy_url}
+                    {writebackResponse.workflow_route === 'OEM_CUSTOM_ESCALATION'
+                      ? `OEM Contact / Escalation Portal: ${writebackResponse.action_buy_url}`
+                      : `Catalog Direct URL: ${writebackResponse.action_buy_url}`}
                   </p>
                 </div>
 
@@ -571,10 +600,23 @@ export default function ERPSimulatorPage() {
                   href={writebackResponse.action_buy_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="px-5 py-2.5 bg-[#0a6ed1] hover:bg-[#0854a0] active:bg-[#064380] text-white font-bold text-[12px] uppercase tracking-wider transition-colors shadow-xs inline-flex items-center gap-2 border border-[#0854a0] cursor-pointer"
+                  className={`px-5 py-2.5 ${
+                    writebackResponse.workflow_route === 'OEM_CUSTOM_ESCALATION'
+                      ? 'bg-[#c62828] hover:bg-[#b71c1c] active:bg-[#8e0000] border-[#b71c1c]'
+                      : 'bg-[#0a6ed1] hover:bg-[#0854a0] active:bg-[#064380] border-[#0854a0]'
+                  } text-white font-bold text-[12px] uppercase tracking-wider transition-colors shadow-xs inline-flex items-center gap-2 border cursor-pointer`}
                 >
-                  <ShoppingCart className="w-4 h-4 shrink-0" />
-                  <span>Procure Component via {writebackResponse.distributor_quote?.distributor || "Distributor"}</span>
+                  {writebackResponse.workflow_route === 'OEM_CUSTOM_ESCALATION' ? (
+                    <>
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      <span>ESCALATE TO OEM ENGINEERING</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShoppingCart className="w-4 h-4 shrink-0" />
+                      <span>Procure Component via {writebackResponse.distributor_quote?.distributor || "Distributor"}</span>
+                    </>
+                  )}
                   <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                 </a>
               </div>
@@ -605,7 +647,7 @@ export default function ERPSimulatorPage() {
           {/* Table Toolbar */}
           <div className="px-4 py-2 border-b border-[#cccccc] bg-[#f2f2f2] flex flex-wrap items-center justify-between gap-3 text-[12px]">
             <div className="flex items-center gap-2">
-              <span className="font-bold text-[#333333] text-[12px]">10-Part mBOM Line Items:</span>
+              <span className="font-bold text-[#333333] text-[12px]">BOM Line Items:</span>
               <div className="flex items-center gap-1 border border-[#cccccc] bg-white">
                 <button
                   onClick={() => setSelectedFilter("ALL")}
@@ -835,7 +877,7 @@ export default function ERPSimulatorPage() {
           <div className="flex items-center gap-2">
             <Building2 className="w-4 h-4 text-[#0a6ed1]" />
             <span>
-              Connected to <strong>DropIn.ai Bi-Directional Digital Twin</strong>. Inventory modifications made in
+              Connected to <strong>DropIn.ai Digital Twin</strong>. Inventory modifications made in
               this table instantly render in the 3D WebGL assembly via reactive Zustand state synchronization.
             </span>
           </div>

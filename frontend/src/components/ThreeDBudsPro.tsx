@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
+import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle, Suspense } from "react";
 import Link from "next/link";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Environment, ContactShadows, Html, Line } from "@react-three/drei";
+import { OrbitControls, Environment, Lightformer, ContactShadows, Html, Line } from "@react-three/drei";
 import * as THREE from "three";
 import {
   Zap,
@@ -85,7 +85,7 @@ interface BOMPartMeshProps {
   explodedX: number;
   compactX: number;
   isSelected: boolean;
-  onSelect: (id: string) => void;
+  onSelect: (id: string | null) => void;
   onActionClick?: (mpn: string) => void;
 }
 
@@ -100,6 +100,8 @@ function BOMPartMesh({
 }: BOMPartMeshProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const pointLightRef = useRef<THREE.PointLight>(null);
+  const materialNumber = item.materialNumber || item.mpn;
+  item.materialNumber = materialNumber;
   const isCritical = item.stock <= item.safetyStock;
 
   // Pulsing emissive warning beacon for any component breaching safety threshold
@@ -126,7 +128,7 @@ function BOMPartMesh({
   });
 
   const posX = isExploded ? explodedX : compactX;
-  const showAnnotation = isSelected || isCritical;
+  const showAnnotation = isSelected;
 
   // Render specific geometric primitive based on meshType
   const renderGeometry = () => {
@@ -368,19 +370,23 @@ function BOMPartMesh({
         />
       )}
 
-      {/* DREI HTML ANNOTATION CARD (Revealed when clicked OR when stock <= safetyStock) */}
-      {showAnnotation && (
-        <Html
-          position={[0, 1.4 + (item.layerIndex % 2 === 0 ? 0.3 : 0), 0]}
-          center
-          distanceFactor={11}
-          zIndexRange={[100, 0]}
-        >
+      {/* DREI HTML ANNOTATION CARD */}
+      <Html
+        key={'html-' + item.materialNumber}
+        position={[0, 1.4 + (item.layerIndex % 2 === 0 ? 0.3 : 0), 0]}
+        center
+        distanceFactor={11}
+        zIndexRange={[100, 0]}
+        style={{ pointerEvents: showAnnotation ? "auto" : "none", display: showAnnotation ? "block" : "none" }}
+      >
+        {showAnnotation && (
           <div
-            className={`w-[240px] p-3 rounded-xl shadow-lg border backdrop-blur-md transition-all select-none font-sans text-left ${
+            key={'card-' + item.materialNumber}
+            onClick={(e) => e.stopPropagation()}
+            className={`w-[240px] p-3 rounded-xl shadow-lg border backdrop-blur-md transition-all select-none font-sans text-left bg-white/90 ${
               isCritical
-                ? "bg-white/95 border-red-500 shadow-[0_4px_20px_rgba(239,68,68,0.25)] ring-1 ring-red-400"
-                : "bg-white/95 border-neutral-200/90 shadow-[0_4px_20px_rgba(0,0,0,0.08)]"
+                ? "border-red-200 shadow-red-500/20 ring-1 ring-red-400"
+                : "border-neutral-200/90 shadow-[0_4px_20px_rgba(0,0,0,0.08)]"
             }`}
           >
             <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-neutral-100">
@@ -390,7 +396,7 @@ function BOMPartMesh({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onSelect("");
+                  onSelect(null);
                 }}
                 className="text-neutral-400 hover:text-neutral-700 p-0.5 cursor-pointer"
               >
@@ -445,8 +451,8 @@ function BOMPartMesh({
               </div>
             )}
           </div>
-        </Html>
-      )}
+        )}
+      </Html>
     </MotionGroup>
   );
 }
@@ -509,7 +515,7 @@ function BudsScene({
             explodedX={coords.exploded}
             compactX={coords.compact}
             isSelected={selectedPartId === item.id}
-            onSelect={(id) => setSelectedPartId(id === selectedPartId ? null : id)}
+            onSelect={(id) => setSelectedPartId(id === selectedPartId || !id ? null : id)}
             onActionClick={onActionClick}
           />
         );
@@ -550,41 +556,54 @@ export default function ThreeDBudsPro({
         camera={{ position: [0, 3.2, 10], fov: 36 }}
         className="w-full h-full cursor-grab active:cursor-grabbing"
       >
-        <ambientLight intensity={0.9} />
-        <directionalLight
-          position={[8, 12, 10]}
-          intensity={1.4}
-          castShadow
-          shadow-mapSize-width={1024}
-          shadow-mapSize-height={1024}
-        />
-        <directionalLight position={[-8, -4, -6]} intensity={0.5} />
-        <Environment preset="studio" />
+        <Suspense fallback={null}>
+          {/* Procedural Synthetic Lighting (100% Offline & Network-Resilient) */}
+          <ambientLight intensity={0.6} />
+          <directionalLight
+            position={[10, 10, 5]}
+            intensity={1.2}
+            castShadow
+            shadow-mapSize={[1024, 1024]}
+          />
+          <directionalLight position={[-10, 10, -5]} intensity={0.5} />
 
-        <BudsScene
-          isExploded={isExploded}
-          onActionClick={(mpn) => {
-            if (onPmicClick) onPmicClick();
-          }}
-        />
+          <Environment background={false} resolution={256}>
+            <group rotation={[-Math.PI / 2, 0, 0]}>
+              {/* Ceiling Key Light */}
+              <Lightformer form="rect" intensity={4} position={[0, 5, -9]} scale={[10, 10, 1]} />
+              {/* Floor Bounce Light */}
+              <Lightformer form="rect" intensity={1.5} position={[0, -5, -9]} scale={[10, 10, 1]} />
+              {/* Left/Right Fill Lights for Metal Reflections */}
+              <Lightformer form="circle" intensity={2} position={[5, 0, -4]} scale={5} />
+              <Lightformer form="circle" intensity={2} position={[-5, 0, -4]} scale={5} />
+            </group>
+          </Environment>
 
-        <ContactShadows
-          position={[0, -1.8, 0]}
-          opacity={0.4}
-          scale={15}
-          blur={1.8}
-          far={4}
-        />
+          <BudsScene
+            isExploded={isExploded}
+            onActionClick={(mpn) => {
+              if (onPmicClick) onPmicClick();
+            }}
+          />
 
-        <OrbitControls
-          ref={orbitRef}
-          enablePan={true}
-          enableZoom={true}
-          enableRotate={true}
-          minDistance={3.5}
-          maxDistance={18}
-          maxPolarAngle={Math.PI / 2 + 0.15}
-        />
+          <ContactShadows
+            position={[0, -1.8, 0]}
+            opacity={0.4}
+            scale={15}
+            blur={1.8}
+            far={4}
+          />
+
+          <OrbitControls
+            ref={orbitRef}
+            enablePan={true}
+            enableZoom={true}
+            enableRotate={true}
+            minDistance={3.5}
+            maxDistance={18}
+            maxPolarAngle={Math.PI / 2 + 0.15}
+          />
+        </Suspense>
       </Canvas>
 
       {/* TOP FLOATING OVERLAY: Title, Critical Badges & ERP Link */}
@@ -596,7 +615,7 @@ export default function ThreeDBudsPro({
               Google Pixel Buds Pro 2
             </h2>
             <p className="text-[10px] text-neutral-500">
-              10-Part Parametric Digital Twin (GA03201)
+              Hardware Model (GRVCC)
             </p>
           </div>
         </div>
