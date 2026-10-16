@@ -48,7 +48,7 @@ class ProcurementAgentResult(BaseModel):
 
 class AgentHardwareVerdict(BaseModel):
     workflow_route: str = Field(
-        description="Must be 'EXACT_ORIGINAL_PROCURED', 'ALTERNATIVE_ENGINEERED', or 'OEM_CUSTOM_ESCALATION'"
+        description="Must be 'EXACT_ORIGINAL_PROCURED', 'EXACT_ORIGINAL_UNAVAILABLE', 'ALTERNATIVE_ENGINEERED', or 'OEM_CUSTOM_ESCALATION'"
     )
     action_buy_url: str = Field(
         description="Real, valid URL to DigiKey, Mouser, Avnet, or the manufacturer to purchase this component"
@@ -299,31 +299,38 @@ def _stage_2_engineering_agent(
     - If search_mode == 'alternative': Uses Dynamic Sourcing Heuristic to engineer a drop-in COTS replacement.
       Strictly forbids returning the original target_mpn.
     """
-    if search_mode == "exact":
-        system_instruction = (
-            f"You are an elite supply chain AI checking inventory for the Google Pixel Buds Pro 2 (true wireless earbuds). Component: {target_mpn}.\n"
-            f"Component Description: {target_description}\n"
-            "CRITICAL SEARCH MODE: EXACT COMPONENT SOURCING ONLY.\n"
-            f"1. You MUST use Google Search to find current distributor stock (DigiKey, Mouser, Avnet) and pricing for the ORIGINAL component: {target_mpn} ONLY.\n"
-            "2. Do NOT attempt to engineer alternatives, find substitutions, or suggest replacement parts. You are strictly evaluating stock for the exact original MPN.\n"
-            "3. Set `workflow_route` to 'EXACT_ORIGINAL_PROCURED'.\n"
-            f"4. Set `candidate_mpn` strictly to '{target_mpn}'.\n"
-            "5. In `search_reasoning`, provide a 2-sentence summary of the live distributor inventory and pricing found online for this original part.\n"
-            "6. In `distributor_quote`, report the actual stock available (or 0 if globally out of stock), unit price in USD, and lead time days."
-        )
+    system_instruction = (
+        f"You are a Principal Hardware Architect and Supply Chain Expert with 50 years of experience in electronics manufacturing. A line-down shortage occurred for the component: {target_mpn}.\n"
+        f"Component Description: {target_description}\n"
+        f"Search Mode: {search_mode}\n\n"
+        "CRITICAL SOURCING HEURISTIC - REALITY OVER HALLUCINATION:\n"
+        "Before sourcing, you MUST use Google Search to deduce the exact physical and commercial reality of this component. Classify it into one of these strict categories:\n"
+        "1. CUSTOM PROPRIETARY SILICON (ASIC): e.g., Apple Silicon, Google Tensor. Impossible to cross-reference. Commercially unavailable.\n"
+        "2. CUSTOM MECHANICAL / TOOLED: e.g., injection-molded plastics, custom FPC flex cables. Impossible to cross-reference.\n"
+        "3. RESTRICTED B2B OEM: e.g., high-density TWS Li-Ion cells (VARTA CoinPower). Highly restricted, not sold loosely on public COTS networks.\n"
+        "4. GENERIC COTS (Commercial Off-The-Shelf): e.g., PMICs, IMUs, MEMS mics, ePTFE vents. Standard jellybean or commercial silicon. Fully interchangeable if specs match.\n\n"
+        "ROUTING EXECUTION BASED ON REALITY:\n"
+        "IF mode is 'exact': Search for the exact original part. If it is Category 1, 2, or 3, public distributor stock will be 0. You MUST route to 'EXACT_ORIGINAL_UNAVAILABLE'. If Category 4, return 'EXACT_ORIGINAL_PROCURED' only if you verify live stock > 0.\n"
+        "IF mode is 'alternative':\n"
+        "- For Categories 1, 2, or 3: Commercial drop-ins DO NOT EXIST. Do not hallucinate. Set `workflow_route` to 'OEM_CUSTOM_ESCALATION', `candidate_mpn` to 'REQUIRES_OEM_INTERVENTION', and `action_buy_url` to the manufacturer's contact page.\n"
+        "- For Category 4 (COTS): You are authorized to engineer a replacement. Set `workflow_route` to 'ALTERNATIVE_ENGINEERED'. You MUST evaluate datasheets to find a different, valid MPN with matching pinout, electrical, and mechanical specs.\n"
+        "CRITICAL FIRMWARE CHECK: If the physical package matches (e.g., 14-pin LGA) but the internal register map or digital protocol differs (e.g., adding I3C), this is still a valid hardware drop-in. However, you MUST explicitly flag 'FIRMWARE REWORK REQUIRED' in your `search_reasoning` and explain exactly why the software team needs to update the drivers.\n\n"
+        "REASONING PROTOCOL: In `search_reasoning`, explicitly state your classification (e.g., 'As a custom ASIC...', 'As a standard COTS IMU...') and your engineering justification before outputting the final verdict."
+    )
 
+    if search_mode == "exact":
         prompt = (
             f"Execute an exact distributor stock search for original component: {target_mpn} ({target_description}).\n"
             "Search DigiKey, Mouser, Avnet, and manufacturer catalogs for live stock and pricing.\n\n"
             "CRITICAL REQUIREMENTS:\n"
             "1. Output ONLY a valid JSON object matching the exact schema below.\n"
-            "2. 'workflow_route' must be 'EXACT_ORIGINAL_PROCURED'.\n"
+            "2. 'workflow_route' must be 'EXACT_ORIGINAL_PROCURED' if distributor stock > 0, or 'EXACT_ORIGINAL_UNAVAILABLE' if 0 stock or proprietary/obsolete.\n"
             f"3. 'candidate_mpn' must be strictly '{target_mpn}'. Do NOT return alternatives.\n"
-            "4. 'action_buy_url' must be the direct distributor purchase/search URL for this original MPN.\n"
+            "4. 'action_buy_url' must be the direct distributor purchase/search URL for this original MPN if in stock, or empty string if unavailable.\n"
             "5. If out of stock, report 'stock_available: 0' and describe the stock exhaustion in 'search_reasoning'.\n\n"
             "{\n"
-            '  "workflow_route": "EXACT_ORIGINAL_PROCURED",\n'
-            '  "action_buy_url": "<Real URL to purchase on DigiKey, Mouser, Avnet>",\n'
+            '  "workflow_route": "EXACT_ORIGINAL_PROCURED or EXACT_ORIGINAL_UNAVAILABLE",\n'
+            '  "action_buy_url": "<Real URL to purchase on DigiKey, Mouser, Avnet, or empty string>",\n'
             '  "search_reasoning": "<Summary of distributor inventory and pricing found online for original MPN>",\n'
             f'  "candidate_mpn": "{target_mpn}",\n'
             '  "aml_authorization": true,\n'
@@ -345,21 +352,6 @@ def _stage_2_engineering_agent(
             "}"
         )
     else:
-        system_instruction = (
-            f"You are an elite supply chain AI sourcing drop-in replacements for the Google Pixel Buds Pro 2 (true wireless earbuds). A shortage occurred for component: {target_mpn}.\n"
-            f"Component Description: {target_description}\n"
-            "CRITICAL ANTI-HALLUCINATION RULES:\n"
-            "1. You MUST use the Google Search tool to find a REAL, globally available manufacturer part number.\n"
-            "2. Do NOT confuse short part numbers (like GAW325 or CP1154) with SMD top-marking codes for unrelated ICs. You must anchor your search to the Component Description provided.\n"
-            "3. NEVER append '-ALT', '-REPLACEMENT', or invent fake MPNs.\n"
-            f"4. FORBIDDEN: You are strictly FORBIDDEN from returning the original part number ({target_mpn}). You MUST engineer a compatible drop-in replacement (COTS) or escalate to OEM if proprietary.\n"
-            "5. In the `search_reasoning` field, write a 2-sentence summary of the real-world manufacturer and the specs you found online BEFORE providing the candidate_mpn.\n"
-            "6. The `engineering_flags` must contain specific, numeric, real-world specs found online.\n"
-            "CRITICAL SOURCING HEURISTIC: You are managing a dynamic enterprise BOM. Before selecting a replacement, you must use Google Search to independently classify the target component's market availability.\n"
-            "1. CLASSIFY AS PROPRIETARY/RESTRICTED: If your research indicates the part is custom OEM silicon, a custom-tooled mechanical enclosure, or an OEM-restricted component unavailable on public B2B distributor catalogs, drop-in replacements DO NOT EXIST. You must halt the search, set `workflow_route` to 'OEM_CUSTOM_ESCALATION', and set `candidate_mpn` to 'REQUIRES_OEM_INTERVENTION'.\n"
-            "2. CLASSIFY AS COTS (Commercial Off-The-Shelf): If the part is a standard commercial IC or passive component, you must evaluate datasheets to find a valid alternative matching the exact pinout, electrical specifications, and mechanical footprint. You MUST NOT return the original MPN.\n"
-            "3. REASONING: In your `search_reasoning`, document your market classification process (why this is COTS vs Proprietary) before providing the final routing decision."
-        )
 
         prompt = (
             f"The component {target_mpn} ({target_description}) is globally out of stock. Search Google for its original datasheet and search distributor websites (DigiKey, Mouser, Avnet) for an active, in-stock drop-in replacement.\n\n"
@@ -367,12 +359,12 @@ def _stage_2_engineering_agent(
             "1. Output ONLY a valid JSON object matching the exact schema below.\n"
             "2. 'workflow_route' must be 'ALTERNATIVE_ENGINEERED' or 'OEM_CUSTOM_ESCALATION'.\n"
             "3. 'action_buy_url' must be an exact, real URL to purchase this alternative on DigiKey, Mouser, Avnet, or the OEM corporate contact page.\n"
-            "4. 'search_reasoning' must be a 2-sentence summary explaining the engineering parity and distributor stock found online (or explicitly documenting market classification if proprietary OEM custom escalation) BEFORE providing candidate_mpn.\n"
+            "4. 'search_reasoning' must explicitly state your classification and engineering justification before candidate_mpn. If firmware/driver rework is required (e.g. register map or protocol differences like I3C), explicitly flag 'FIRMWARE REWORK REQUIRED'.\n"
             f"5. 'candidate_mpn' must be a genuine, globally available commercial manufacturer part number (DIFFERENT from {target_mpn}), or 'REQUIRES_OEM_INTERVENTION' if proprietary ASIC or custom enclosure. NEVER append '-ALT' or '-REPLACEMENT'. NEVER return the original {target_mpn}.\n\n"
             "{\n"
             '  "workflow_route": "ALTERNATIVE_ENGINEERED or OEM_CUSTOM_ESCALATION",\n'
             '  "action_buy_url": "<Real URL to purchase on DigiKey, Mouser, Avnet, or OEM contact page>",\n'
-            '  "search_reasoning": "<2-sentence summary of datasheet search, engineering parity, or market classification for proprietary custom component>",\n'
+            '  "search_reasoning": "<State classification and engineering justification; flag FIRMWARE REWORK REQUIRED if drivers/registers differ>",\n'
             '  "candidate_mpn": "<Real commercial manufacturer part number or REQUIRES_OEM_INTERVENTION>",\n'
             '  "aml_authorization": true,\n'
             '  "confidence_score": 0.96,\n'
@@ -402,12 +394,20 @@ def _stage_2_engineering_agent(
     parsed["candidate_mpn"] = cand
 
     if search_mode == "exact":
-        parsed["workflow_route"] = "EXACT_ORIGINAL_PROCURED"
-        parsed["candidate_mpn"] = target_mpn
-        buy_url = str(parsed.get("action_buy_url", "")).strip()
+        route = str(parsed.get("workflow_route", "")).strip().upper()
         dist_info = parsed.get("distributor_quote", {})
-        dist_name = dist_info.get("distributor", "DigiKey") if isinstance(dist_info, dict) else "DigiKey"
-        parsed["action_buy_url"] = ensure_valid_url(buy_url, target_mpn, dist_name)
+        stock = dist_info.get("stock_available", 0) if isinstance(dist_info, dict) else 0
+        if "EXACT_ORIGINAL_UNAVAILABLE" in route or stock <= 0:
+            parsed["workflow_route"] = "EXACT_ORIGINAL_UNAVAILABLE"
+            parsed["aml_authorization"] = False
+            parsed["action_buy_url"] = ""
+        else:
+            parsed["workflow_route"] = "EXACT_ORIGINAL_PROCURED"
+            parsed["aml_authorization"] = True
+            buy_url = str(parsed.get("action_buy_url", "")).strip()
+            dist_name = dist_info.get("distributor", "DigiKey") if isinstance(dist_info, dict) else "DigiKey"
+            parsed["action_buy_url"] = ensure_valid_url(buy_url, target_mpn, dist_name)
+        parsed["candidate_mpn"] = target_mpn
     else:
         # Detect proprietary custom ASIC / custom molded enclosure escalation dynamically
         route = str(parsed.get("workflow_route", "")).strip().upper()
@@ -483,56 +483,17 @@ def _sync_multi_agent_pipeline(
 ) -> AgentHardwareVerdict:
     """
     Executes the Dual-Mode Agentic Pipeline:
-    - search_mode == 'exact': Queries distributor stock for the ORIGINAL target MPN only.
+    - search_mode == 'exact': Queries distributor stock for the ORIGINAL target MPN with 50-year veteran taxonomy.
     - search_mode == 'alternative': Uses Dynamic Sourcing Heuristic to engineer drop-in COTS replacement.
     """
     print(f"\n[MultiAgentPipeline] ========================================================")
     print(f"[MultiAgentPipeline] INITIATING AGENT [Mode: {search_mode.upper()}] for {target_mpn} ({target_description})...")
 
-    if search_mode == "exact":
-        stage_1_result = _stage_1_procurement_agent(target_mpn, target_description)
-        stock_count = stage_1_result.stock_count if stage_1_result.found_original else 0
-        distributor = stage_1_result.distributor or "DigiKey"
-        buy_url = stage_1_result.buy_url or f"https://www.digikey.com/en/products/result?keywords={quote_plus(target_mpn)}"
-
-        print(f"[MultiAgentPipeline] EXACT SEARCH RESULT: {target_mpn} -> {stock_count} units available at {distributor}.")
-
-        return AgentHardwareVerdict(
-            workflow_route="EXACT_ORIGINAL_PROCURED",
-            action_buy_url=buy_url,
-            search_reasoning=stage_1_result.search_reasoning or f"Live distributor search for original component {target_mpn} completed. Available stock: {stock_count:,} units.",
-            candidate_mpn=target_mpn,
-            aml_authorization=(stock_count > 0),
-            confidence_score=0.99,
-            engineering_flags=[
-                f"Original OEM Part: {target_mpn} ({target_description})",
-                f"Distributor Inventory: {stock_count:,} units at {distributor}",
-                f"Fulfillment Lead Time: {stage_1_result.lead_time_days} business days"
-            ],
-            critical_differences=[
-                "Exact OEM component match - 100% pinout, electrical, and mechanical parity"
-            ],
-            distributor_quote=DistributorQuote(
-                distributor=distributor,
-                stock_available=stock_count,
-                unit_price_usd=stage_1_result.unit_price_usd,
-                lead_time_days=stage_1_result.lead_time_days
-            ),
-            message=(
-                f"Exact Original Sourcing: {target_mpn} located at {distributor} with {stock_count:,} units in stock."
-                if stock_count > 0
-                else f"Stock Shortage Alert: Exact original {target_mpn} has 0 units in stock globally across major distributors."
-            )
-        )
-
-    # search_mode == "alternative"
-    print(f"[MultiAgentPipeline] INITIATING STAGE 2: Engineering Agent for drop-in alternative synthesis...")
-    stage_2_verdict = _stage_2_engineering_agent(target_mpn, target_description, search_mode="alternative")
-    verdict = stage_2_verdict
+    verdict = _stage_2_engineering_agent(target_mpn, target_description, search_mode=search_mode)
     dist = verdict.distributor_quote.distributor.lower() if verdict.distributor_quote else ""
     mpn = quote_plus(verdict.candidate_mpn.strip()) if verdict.candidate_mpn else ""
 
-    if verdict.workflow_route != "OEM_CUSTOM_ESCALATION":
+    if verdict.workflow_route not in ("OEM_CUSTOM_ESCALATION", "EXACT_ORIGINAL_UNAVAILABLE"):
         if "mouser" in dist:
             verdict.action_buy_url = f"https://www.mouser.com/c/?q={mpn}"
         elif "digikey" in dist:
@@ -542,7 +503,7 @@ def _sync_multi_agent_pipeline(
         else:
             verdict.action_buy_url = f"https://www.digikey.com/en/products/result?keywords={mpn}"
 
-    print(f"[MultiAgentPipeline] STAGE 2 SUCCESS: Alternative {verdict.candidate_mpn} synthesized & routed ({verdict.workflow_route}).")
+    print(f"[MultiAgentPipeline] AGENT SUCCESS [Mode: {search_mode.upper()}]: {verdict.candidate_mpn} routed ({verdict.workflow_route}).")
     return verdict
 
 

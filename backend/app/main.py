@@ -53,7 +53,7 @@ class SAPLineDownWebhook(BaseModel):
 class ERPWritebackResponse(BaseModel):
     workflow_route: str = Field(
         default="ALTERNATIVE_ENGINEERED",
-        description="Must be 'EXACT_ORIGINAL_PROCURED', 'ALTERNATIVE_ENGINEERED', or 'OEM_CUSTOM_ESCALATION'"
+        description="Must be 'EXACT_ORIGINAL_PROCURED', 'EXACT_ORIGINAL_UNAVAILABLE', 'ALTERNATIVE_ENGINEERED', or 'OEM_CUSTOM_ESCALATION'"
     )
     action_buy_url: str = Field(default="", description="Valid purchase URL on DigiKey, Mouser, Avnet, or manufacturer")
     search_reasoning: str = Field(default="", description="2-sentence summary of the real-world manufacturer and specs found online BEFORE candidate_mpn")
@@ -114,6 +114,13 @@ async def handle_sap_line_down(webhook: SAPLineDownWebhook) -> ERPWritebackRespo
             msg = (
                 f"OEM Escalation Required: {webhook.target_mpn} is a proprietary custom component. "
                 "Commercial off-the-shelf drop-in replacements do not exist. Escalated to OEM engineering team."
+            )
+        elif verdict.workflow_route == "EXACT_ORIGINAL_UNAVAILABLE":
+            po_number = None
+            procurement_status = "EXACT_ORIGINAL_UNAVAILABLE"
+            msg = (
+                f"Exact Original Unavailable: {webhook.target_mpn} has 0 stock across global distributor catalogs. "
+                "Immediate drop-in alternative synthesis recommended."
             )
         elif verdict.aml_authorization and verdict.confidence_score >= 0.85:
             po_number = f"PO-SAP-{random.randint(400000, 999999)}"
