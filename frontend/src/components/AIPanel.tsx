@@ -22,9 +22,10 @@ import {
 import { useInventoryStore } from "@/store/useInventoryStore";
 
 export default function AIPanel({ isOpen }: { isOpen: boolean }) {
-  const { items, selectedPartId, lastBreachedMpn, setDropInResolution } = useInventoryStore();
+  const { items, selectedPartId, lastBreachedMpn, setDropInResolution, markResolved } = useInventoryStore();
 
   const [loading, setLoading] = useState(false);
+  const [pipelineMode, setPipelineMode] = useState<"exact" | "alternative">("exact");
   const [isFindingAlternative, setIsFindingAlternative] = useState(false);
   const [loadingMpn, setLoadingMpn] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
@@ -46,16 +47,24 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
 
   const currentActiveMpn = loadingMpn || result?.original_mpn || activeItem?.materialNumber || activeItem?.mpn || "MAX77650EWV+T";
 
-  const logs = [
-    `Stage 1: Ingesting SAP S/4HANA Line-Down Alert (MPN: ${currentActiveMpn})...`,
-    "Stage 1: Procurement Agent scanning DigiKey, Mouser, Avnet for original stock...",
-    `Stage 1: Verified original ${currentActiveMpn} global stock level & lead time...`,
-    "Stage 2: Original out of stock. Initiating Engineering Agent for datasheet analysis...",
-    "Stage 2: Extracting pinout alignments, voltage thresholds & thermal package envelope...",
-    "Stage 2: Evaluating in-stock drop-in alternatives on live distributor networks...",
-    "Stage 2: Synthesizing deterministic AgentHardwareVerdict with direct procurement URL...",
-    "Stage 2: Generating automated EDI Purchase Order & transmitting SAP writeback..."
-  ];
+  const logs = pipelineMode === "alternative"
+    ? [
+        "Pipeline Mode: AUTONOMOUS DROP-IN SYNTHESIS (Gemini 3.8 Flash)",
+        "Stage 1: Original procurement bypassed. Line-down threshold breached.",
+        "Stage 2: Engineering Agent analyzing datasheets and pinout alignments...",
+        "Stage 2: Evaluating thermal dissipation, voltage tolerances, and package envelope...",
+        "Stage 2: Validating COTS drop-in availability on global supply networks...",
+        "Stage 3: Synthesizing deterministic AgentHardwareVerdict and EDI writeback..."
+      ]
+    : [
+        `Stage 1: Scanning global distributor catalogs for original ${currentActiveMpn}...`,
+        "Stage 1: Querying Mouser, DigiKey, and Avnet inventories...",
+        `Stage 1: Verified original ${currentActiveMpn} market catalog status...`,
+        "Stage 2: Verifying distributor stock levels & lead times...",
+        "Stage 2: Checking immediate availability, pricing tiers, and factory backlog...",
+        "Stage 2: Synthesizing deterministic AgentHardwareVerdict with exact procurement URL...",
+        "Stage 3: Sourcing Status & Procurement Report recorded in ERP system..."
+      ];
 
   // Auto-trigger exact search when a component enters criticalItems
   useEffect(() => {
@@ -81,9 +90,14 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
     let timer1: NodeJS.Timeout;
     let timer2: NodeJS.Timeout;
     if (loading) {
-      setPipelineStage(1);
-      timer1 = setTimeout(() => setPipelineStage(2), 2600);
-      timer2 = setTimeout(() => setPipelineStage(3), 5500);
+      if (pipelineMode === "alternative") {
+        setPipelineStage(2);
+        timer1 = setTimeout(() => setPipelineStage(3), 3200);
+      } else {
+        setPipelineStage(1);
+        timer1 = setTimeout(() => setPipelineStage(2), 2600);
+        timer2 = setTimeout(() => setPipelineStage(3), 5500);
+      }
     } else {
       setPipelineStage(1);
     }
@@ -91,7 +105,7 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
       clearTimeout(timer1);
       clearTimeout(timer2);
     };
-  }, [loading]);
+  }, [loading, pipelineMode]);
 
   useEffect(() => {
     if (logEndRef.current) {
@@ -104,20 +118,20 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
     if (loading) {
       interval = setInterval(() => {
         setLogIndex(prev => (prev < logs.length - 1 ? prev + 1 : prev));
-      }, 800);
+      }, pipelineMode === "alternative" ? 650 : 800);
     } else {
       setLogIndex(0);
     }
     return () => clearInterval(interval);
-  }, [loading, logs.length]);
+  }, [loading, logs.length, pipelineMode]);
 
   const runPipeline = async (targetMpn?: string, searchMode: "exact" | "alternative" = "exact") => {
-    if (searchMode === "alternative") {
-      setIsFindingAlternative(true);
-    } else {
-      setLoading(true);
-      setResult(null);
-    }
+    setPipelineMode(searchMode);
+    setIsFindingAlternative(searchMode === "alternative");
+    setPipelineStage(searchMode === "alternative" ? 2 : 1);
+    setLoading(true);
+    setResult(null);
+    setLogIndex(0);
 
     const targetItem =
       items.find((i) => (i.materialNumber || i.mpn) === targetMpn) ||
@@ -145,6 +159,9 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
       });
       const data = await res.json();
       setResult(data);
+
+      const targetMatNum = targetItem?.materialNumber || targetItem?.mpn || chosenMpn;
+      markResolved(targetMatNum, data.verdict || data);
 
       if (data.aml_authorization && targetItem && data.workflow_route !== 'OEM_CUSTOM_ESCALATION') {
         setDropInResolution(
@@ -175,26 +192,8 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
           transition={{ type: 'spring', damping: 25, stiffness: 200 }}
           className="absolute right-0 top-0 h-full w-[480px] bg-white border-l border-neutral-200/90 shadow-[-10px_0_40px_rgba(32,33,36,0.08)] flex flex-col z-50 p-8 font-sans text-[#202124]"
         >
-          {/* Header */}
-          <div className="flex items-center justify-between mb-8 shrink-0 pb-4 border-b border-neutral-100">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-[#1a73e8]" />
-                <h2 className="text-[#202124] text-sm font-semibold tracking-tight">
-                  Autonomous ERP Middleware
-                </h2>
-              </div>
-              <p className="text-[11px] text-[#5f6368] mt-0.5">Autonomous Pipeline</p>
-            </div>
-            
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#e8f0fe] border border-[#d2e3fc] text-[#1967d2] text-[10px] font-medium font-mono">
-              <Activity className="w-3 h-3 text-[#1a73e8]" />
-              <span>SAP ACTIVE</span>
-            </div>
-          </div>
-          
           {/* Body Content */}
-          <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-4">
+          <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
             {/* Multi-Agent Sequential Timeline During Loading */}
             {loading && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col gap-4">
@@ -203,7 +202,9 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-bold text-[#1a73e8] uppercase tracking-wider flex items-center gap-1.5">
                       <Sparkles className="w-3.5 h-3.5 animate-spin" />
-                      Sequential Multi-Agent Pipeline Active
+                      {pipelineMode === "alternative"
+                        ? "Autonomous Drop-In Synthesis Active"
+                        : "Sequential Multi-Agent Pipeline Active"}
                     </span>
                     <span className="text-[10px] font-mono text-neutral-500">GEMINI 3.8 FLASH</span>
                   </div>
@@ -218,13 +219,21 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
                           ? 'bg-[#1a73e8] text-white animate-pulse' 
                           : 'bg-neutral-200 text-neutral-500'
                       }`}>
-                        {pipelineStage > 1 ? <Check className="w-3 h-3" /> : 1}
+                        {pipelineStage > 1 ? <Check className="w-3 h-3" /> : (
+                          pipelineStage === 1 ? <RotateCw className="w-3 h-3 animate-spin text-white" /> : 1
+                        )}
                       </div>
                       <div>
                         <p className={`text-xs font-semibold ${pipelineStage >= 1 ? 'text-[#202124]' : 'text-neutral-400'}`}>
-                          Step 1: Attempting to procure original {activeItem?.mpn || "part"} globally...
+                          {pipelineMode === "alternative"
+                            ? "Step 1: Original component shortage confirmed"
+                            : `Step 1: Scanning global distributor catalogs for original ${currentActiveMpn}...`}
                         </p>
-                        <p className="text-[10px] text-neutral-500">Live internet search across DigiKey, Mouser, Avnet registries</p>
+                        <p className="text-[10px] text-neutral-500">
+                          {pipelineMode === "alternative"
+                            ? "Direct procurement bypassed. Escalating to engineering."
+                            : "Querying Mouser, DigiKey, and Avnet inventories"}
+                        </p>
                       </div>
                     </div>
 
@@ -237,13 +246,21 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
                           ? 'bg-[#1a73e8] text-white animate-pulse' 
                           : 'bg-neutral-200 text-neutral-500'
                       }`}>
-                        {pipelineStage > 2 ? <Check className="w-3 h-3" /> : 2}
+                        {pipelineStage > 2 ? <Check className="w-3 h-3" /> : (
+                          pipelineStage === 2 ? <RotateCw className="w-3 h-3 animate-spin text-white" /> : 2
+                        )}
                       </div>
                       <div>
                         <p className={`text-xs font-semibold ${pipelineStage >= 2 ? 'text-[#202124]' : 'text-neutral-400'}`}>
-                          Step 2: Original out of stock. Initiating Engineering Agent for datasheet analysis...
+                          {pipelineMode === "alternative"
+                            ? "Step 2: Engineering Agent active — Gemini 3.8 Flash datasheet synthesis..."
+                            : "Step 2: Verifying distributor stock levels & lead times..."}
                         </p>
-                        <p className="text-[10px] text-neutral-500">Multimodal pinout matching, thermal & voltage constraint evaluation</p>
+                        <p className="text-[10px] text-neutral-500">
+                          {pipelineMode === "alternative"
+                            ? "Evaluating pinout parity, electrical envelope, package footprint, and COTS vs OEM constraints"
+                            : "Checking immediate availability, pricing tiers, and factory backlog"}
+                        </p>
                       </div>
                     </div>
 
@@ -252,13 +269,19 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
                       <div className={`absolute -left-6 top-0.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold transition-colors ${
                         pipelineStage === 3 ? 'bg-[#1a73e8] text-white animate-pulse' : 'bg-neutral-200 text-neutral-500'
                       }`}>
-                        3
+                        {pipelineStage === 3 ? <RotateCw className="w-3 h-3 animate-spin text-white" /> : 3}
                       </div>
                       <div>
                         <p className={`text-xs font-semibold ${pipelineStage >= 3 ? 'text-[#202124]' : 'text-neutral-400'}`}>
-                          Step 3: EDI Purchase Order Dispatch & SAP Writeback
+                          {pipelineMode === "alternative"
+                            ? "Step 3: EDI Purchase Order Dispatch & SAP Writeback"
+                            : "Step 3: Sourcing Status & Procurement Report"}
                         </p>
-                        <p className="text-[10px] text-neutral-500">Autonomous AML approval and electronic order placement</p>
+                        <p className="text-[10px] text-neutral-500">
+                          {pipelineMode === "alternative"
+                            ? "Autonomous AML authorization or OEM escalation routing"
+                            : "Recording inventory availability in ERP system"}
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -268,7 +291,7 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
                 <div className="bg-[#202124] p-4 rounded-2xl font-mono text-[11px] leading-relaxed text-neutral-300 h-52 overflow-y-auto shadow-inner">
                   {logs.slice(0, logIndex + 1).map((log, i) => (
                     <motion.div key={i} initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} className="mb-2">
-                      <span className="text-[#8ab4f8] mr-2">➜</span> 
+                      <span className="text-[#8ab4f8] mr-2">→</span> 
                       <span className={i === logIndex ? "text-white font-semibold" : "text-neutral-400"}>{log}</span>
                     </motion.div>
                   ))}
@@ -297,12 +320,16 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
                       <div className={`p-2.5 rounded-full ${
                         result?.workflow_route === 'OEM_CUSTOM_ESCALATION'
                           ? 'bg-orange-100 text-orange-600'
+                          : result?.workflow_route === 'EXACT_ORIGINAL_UNAVAILABLE'
+                          ? 'bg-red-100 text-red-600'
                           : result?.aml_authorization
                           ? 'bg-[#ceead6] text-[#137333]'
                           : 'bg-[#f5c2c7] text-[#c5221f]'
                       }`}>
                         {result?.workflow_route === 'OEM_CUSTOM_ESCALATION' ? (
                           <AlertTriangle className="w-5 h-5" />
+                        ) : result?.workflow_route === 'EXACT_ORIGINAL_UNAVAILABLE' ? (
+                          <X className="w-5 h-5" />
                         ) : result?.aml_authorization ? (
                           <Check className="w-5 h-5" />
                         ) : (
@@ -311,17 +338,25 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
                       </div>
                       <div>
                         <span className="text-[10px] font-bold tracking-wider uppercase font-mono text-[#5f6368]">
-                          {result?.workflow_route === 'OEM_CUSTOM_ESCALATION' ? 'PROPRIETARY ESCALATION' : 'AML VERIFICATION STATUS'}
+                          {result?.workflow_route === 'OEM_CUSTOM_ESCALATION'
+                            ? 'PROPRIETARY ESCALATION'
+                            : result?.workflow_route === 'EXACT_ORIGINAL_UNAVAILABLE'
+                            ? 'EXACT MATCH STATUS'
+                            : 'AML VERIFICATION STATUS'}
                         </span>
                         <h4 className={`text-base font-bold tracking-tight ${
                           result?.workflow_route === 'OEM_CUSTOM_ESCALATION'
                             ? 'text-orange-600'
+                            : result?.workflow_route === 'EXACT_ORIGINAL_UNAVAILABLE'
+                            ? 'text-[#c5221f]'
                             : result?.aml_authorization
                             ? 'text-[#137333]'
                             : 'text-[#c5221f]'
                         }`}>
                           {result?.workflow_route === 'OEM_CUSTOM_ESCALATION'
                             ? "OEM Escalation Required"
+                            : result?.workflow_route === 'EXACT_ORIGINAL_UNAVAILABLE'
+                            ? "Original Out of Stock"
                             : result?.aml_authorization
                             ? "Approved Drop-In Replacement"
                             : "Hold for Engineering Review"}
@@ -334,12 +369,16 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
                       <span className={`px-2.5 py-1 rounded-full text-[9px] font-bold font-mono tracking-wider uppercase border ${
                         result.workflow_route === 'OEM_CUSTOM_ESCALATION'
                           ? 'text-orange-600 bg-orange-50 border-orange-200'
+                          : result.workflow_route === 'EXACT_ORIGINAL_UNAVAILABLE'
+                          ? 'text-red-700 bg-red-50 border-red-300'
                           : result.workflow_route === 'EXACT_ORIGINAL_PROCURED'
                           ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
                           : 'bg-blue-100 text-[#1a73e8] border-blue-200'
                       }`}>
                         {result.workflow_route === 'OEM_CUSTOM_ESCALATION'
                           ? 'OEM ESCALATION REQUIRED'
+                          : result.workflow_route === 'EXACT_ORIGINAL_UNAVAILABLE'
+                          ? 'EXACT MATCH UNAVAILABLE'
                           : result.workflow_route === 'EXACT_ORIGINAL_PROCURED'
                           ? 'EXACT OEM MATCH'
                           : 'ALTERNATIVE ENGINEERED'}
@@ -413,7 +452,21 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
                   )}
 
                   {/* HIGHLY VISIBLE ACTION BUTTON: CLICKABLE URL TO DISTRIBUTOR OR OEM */}
-                  {result?.action_buy_url && (
+                  {result?.workflow_route === 'EXACT_ORIGINAL_UNAVAILABLE' ? (
+                    <div className="mb-4">
+                      <button
+                        type="button"
+                        disabled
+                        className="w-full py-3.5 px-4 bg-neutral-200 text-neutral-500 rounded-xl text-xs font-bold tracking-wide shadow-none flex justify-center items-center gap-2 cursor-not-allowed text-center select-none"
+                      >
+                        <X className="w-4 h-4 shrink-0 text-neutral-400" />
+                        <span>OUT OF STOCK ON DISTRIBUTOR NETWORKS</span>
+                      </button>
+                      <p className="text-[10px] text-center text-neutral-500 mt-1 font-mono">
+                        Global distributor inventory exhausted for exact OEM MPN
+                      </p>
+                    </div>
+                  ) : result?.action_buy_url ? (
                     <div className="mb-4">
                       <a
                         href={result.action_buy_url}
@@ -444,7 +497,7 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
                           : `Direct procurement link: ${result.action_buy_url.slice(0, 48)}...`}
                       </p>
                     </div>
-                  )}
+                  ) : null}
 
                   {/* Engineering Constraints Differences */}
                   <div className="text-xs font-semibold text-[#202124] mb-2">Electrical & Thermal Analysis:</div>
@@ -469,7 +522,7 @@ export default function AIPanel({ isOpen }: { isOpen: boolean }) {
                   </div>
 
                   {/* PROMINENT STYLIZED ACTION BUTTON: Find Drop-In Alternative with Gemini */}
-                  {result.workflow_route === 'EXACT_ORIGINAL_PROCURED' && (
+                  {(result.workflow_route === 'EXACT_ORIGINAL_PROCURED' || result.workflow_route === 'EXACT_ORIGINAL_UNAVAILABLE') && (
                     <div className="mt-4 pt-3 border-t border-neutral-200/70">
                       <button
                         type="button"

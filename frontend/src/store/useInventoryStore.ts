@@ -17,6 +17,8 @@ export interface InventoryItem {
   layerIndex: number;
   isDropInReplacement?: boolean;
   altMpn?: string;
+  isResolved?: boolean;
+  aiVerdict?: any;
 }
 
 export interface InventoryStoreState {
@@ -26,6 +28,7 @@ export interface InventoryStoreState {
   updateStock: (id: string, newStock: number) => void;
   setSelectedPartId: (id: string | null) => void;
   setDropInResolution: (mpn: string, altMpn: string, stockAdded: number, leadTimeDays: number, vendor: string) => void;
+  markResolved: (materialNumber: string, verdict: any) => void;
   resetAll: () => void;
   simulateShortage: (id: string) => void;
 }
@@ -238,20 +241,60 @@ export const useInventoryStore = create<InventoryStoreState>()(
         }));
       },
 
+      markResolved: (materialNumber: string, verdict: any) => {
+        set((state) => ({
+          items: state.items.map((item) => {
+            const matches =
+              item.materialNumber.toLowerCase() === materialNumber.toLowerCase() ||
+              item.mpn.toLowerCase() === materialNumber.toLowerCase() ||
+              item.id.toLowerCase() === materialNumber.toLowerCase();
+            if (matches) {
+              return {
+                ...item,
+                isResolved: true,
+                aiVerdict: verdict
+              };
+            }
+            return item;
+          }),
+          lastBreachedMpn: state.lastBreachedMpn?.toLowerCase() === materialNumber.toLowerCase() ? null : state.lastBreachedMpn
+        }));
+      },
+
       resetAll: () => {
         set({
-          items: INITIAL_BOM,
+          items: INITIAL_BOM.map((item) => ({
+            ...item,
+            isResolved: false,
+            aiVerdict: undefined,
+            isDropInReplacement: false,
+            altMpn: undefined
+          })),
           selectedPartId: null,
           lastBreachedMpn: null
         });
       },
 
       simulateShortage: (id: string) => {
-        const target = get().items.find((i) => i.id === id || i.mpn === id);
+        const target = get().items.find((i) => i.id === id || i.mpn === id || i.materialNumber === id);
         if (target) {
           const droppedStock = Math.max(0, Math.floor(target.safetyStock * 0.4));
-          get().updateStock(target.id, droppedStock);
-          set({ selectedPartId: target.id, lastBreachedMpn: target.mpn });
+          set((state) => ({
+            items: state.items.map((item) =>
+              item.id === target.id
+                ? {
+                    ...item,
+                    stock: droppedStock,
+                    isResolved: false,
+                    aiVerdict: undefined,
+                    isDropInReplacement: false,
+                    altMpn: undefined
+                  }
+                : item
+            ),
+            selectedPartId: target.id,
+            lastBreachedMpn: target.mpn
+          }));
         }
       }
     }),

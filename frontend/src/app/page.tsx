@@ -15,24 +15,17 @@ export default function Dashboard() {
       <header className="h-16 border-b border-neutral-200/90 bg-white flex items-center px-8 justify-between shrink-0 shadow-xs z-20">
         <div className="flex items-center gap-3">
           <div className="w-4 h-4 rounded-full bg-[#1a73e8] shadow-[0_0_8px_rgba(26,115,232,0.4)]" />
-          <h1 className="text-[#202124] font-bold tracking-tight text-base flex items-center gap-2">
+          <h1 className="text-[#202124] font-bold tracking-tight text-base">
             <span>DropIn.ai</span>
-            <span className="text-neutral-300 font-light">|</span>
-            <span className="text-[#5f6368] font-normal text-sm">Enterprise Supply Chain Middleware</span>
           </h1>
         </div>
 
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-[#f8f9fa] border border-neutral-200 text-xs text-[#5f6368]">
-            <span className="w-2 h-2 rounded-full bg-[#34a853]" />
-            <span>SAP S/4HANA EDI Gateway Connected</span>
-          </div>
-
           <Link
             href="/erp-simulator"
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 hover:bg-neutral-100 text-xs font-medium text-[#202124] transition-colors"
           >
-            <span>Launch SAP S/4HANA</span>
+            <span>Open SAP Fiori ERP</span>
           </Link>
 
           <button
