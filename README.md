@@ -44,16 +44,37 @@ Old browser-local inventory is intentionally not imported or deleted because it 
 Requirements: Node.js 22+, Python 3.12+, npm, and optionally a Gemini API key.
 Inventory and local PDF extraction work without a key.
 
+### One-command Windows setup
+
+From the cloned repository root, in Windows PowerShell 5.1 or PowerShell 7:
+
 ```powershell
-cd frontend
-npm ci
-cd ..\backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-For Gemini research, create `backend\.env` (never commit it):
+The [setup script](./setup.ps1):
+
+1. Finds Node.js 22+ and Python 3.12+. If either is missing, installs Node LTS/Python 3.12 using Windows Package Manager (`winget`); installer approval may be requested. Without winget, it stops with manual installation instructions.
+2. Creates `backend\.venv` and installs backend runtime/test dependencies there. No Python activation or global pip installation is needed.
+3. Runs `npm ci --include=dev` in `frontend` using the committed lockfile.
+4. Creates `backend\.env` and `frontend\.env.local` from safe local-mode examples **only when missing**. Existing settings, keys, environments and inventory are not deleted or overwritten.
+5. Checks Python dependency consistency/imports, generates Next.js route/environment types for the fresh checkout, and checks frontend TypeScript. A failed command stops setup with an error rather than reporting success.
+
+Internet access and disk space are required. Stop running frontend services before rerunning setup because `npm ci` replaces `node_modules`. Setup does not start servers, call Gemini, request secrets, or provision GCP/Firebase. The default local mode uses SQLite and manual research; automatic background sourcing requires the separate [cloud deployment](./DEPLOYMENT.md). Existing cloud-configured environment files are preserved, not silently changed into local mode. An incomplete/old virtual environment is reported rather than deleted.
+
+Optional setup controls:
+
+```powershell
+# Use an installed interpreter (for example, a Conda installation).
+.\setup.ps1 -Python "C:\path\to\python.exe"
+# Require preinstalled runtimes; never invoke winget.
+.\setup.ps1 -SkipRuntimeInstall
+```
+
+If corporate execution policy blocks scripts, use your approved policy/workflow; the command above only bypasses policy for that PowerShell process and does not change machine policy. If runtime installation needs a shell restart, follow the script's explicit instruction and rerun it.
+
+For Gemini research, edit the generated `backend\.env` (never commit it):
 
 ```dotenv
 GEMINI_API_KEY=your_key
@@ -79,10 +100,12 @@ Open <http://localhost:3000>. API docs: <http://localhost:8080/docs>.
 Alternatively, from the repository root:
 
 ```powershell
-.\start.ps1 -Python .\backend\.venv\Scripts\python.exe
+.\start.ps1
+# Override the default project virtual environment only if needed:
+# .\start.ps1 -Python C:\path\to\python.exe
 ```
 
-The launcher uses the selected interpreter, checks dependencies, and waits for HTTP readiness instead of a fixed delay. It reuses responsive services and prints process IDs for newly started services.
+The launcher prefers `backend\.venv`, checks dependencies, and waits for HTTP readiness instead of a fixed delay. It reuses responsive services and prints process IDs for newly started services.
 
 ### Configuration
 

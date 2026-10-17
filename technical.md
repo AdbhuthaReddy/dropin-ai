@@ -49,6 +49,8 @@ Cloud inventory can serve multiple API instances; it is still a shared hackathon
 
 ### Local-mode reference
 
+Windows fresh-clone bootstrap is [setup.ps1](./setup.ps1): it checks Node 22+/Python 3.12+, optionally installs missing runtimes through winget, creates/reuses `backend\.venv`, installs `requirements-dev.txt` and lockfile-based npm dependencies, and checks pip consistency/imports and TypeScript. It copies tracked local-mode environment templates only when the target files do not exist. It never asks for or prints a key, replaces existing configuration/inventory, activates Python globally, starts services or provisions cloud resources. `-SkipRuntimeInstall` disables winget and `-Python` selects the interpreter for a new environment. [start.ps1](./start.ps1) now prefers that project environment automatically. See the [README setup instructions](./README.md#one-command-windows-setup).
+
 The numbered sections below describe the local/manual path unless explicitly noted. Cloud behavior above supersedes local-only assumptions about persistence, authentication, polling, automatic triggers and process recovery.
 
 ## 1. Purpose and boundaries

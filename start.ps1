@@ -1,11 +1,23 @@
 param(
-    [string]$Python = "python",
+    [string]$Python,
     [switch]$NoBrowser
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $Python) {
+    $localPython = Join-Path $PSScriptRoot "backend\.venv\Scripts\python.exe"
+    $Python = if (Test-Path -LiteralPath $localPython) { $localPython } else { "python" }
+}
 $pythonPath = (Get-Command $Python -ErrorAction Stop).Source
-$npmPath = (Get-Command npm.cmd -ErrorAction Stop).Source
+$npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+$npmPath = if ($npmCommand) { $npmCommand.Source } else {
+    @(
+        (Join-Path $env:ProgramFiles "nodejs\npm.cmd"),
+        (Join-Path $env:LOCALAPPDATA "Programs\nodejs\npm.cmd")
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+if (-not $npmPath) { throw "npm is unavailable. Run .\setup.ps1 first." }
+$env:PATH = "$(Split-Path -Parent $npmPath);$env:PATH"
 $backendPath = Join-Path $PSScriptRoot "backend"
 $frontendPath = Join-Path $PSScriptRoot "frontend"
 

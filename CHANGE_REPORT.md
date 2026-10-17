@@ -1,5 +1,12 @@
 # Change Report and Engineering Review
 
+## Fresh-clone Windows setup
+
+- Added root `setup.ps1` for Windows PowerShell 5.1/PowerShell 7: runtime discovery/version checks, optional winget installation of missing Node/Python, isolated backend virtual environment, runtime/test pip dependencies, lockfile-based npm installation including dev tools, local environment templates, pip consistency/import checks and frontend type checking.
+- Existing configuration, keys, inventory and valid environments are preserved. Invalid environments and failed external commands stop with explicit errors; no automatic deletion, key collection, Gemini call or cloud provisioning occurs. `-SkipRuntimeInstall` prohibits winget; `-Python` selects the interpreter for a new environment.
+- Updated `start.ps1` to prefer the project environment and find npm at standard installation paths, including immediately after a runtime install. Updated the README/technical reference and included nonsecret environment examples in Git.
+- Validation: PowerShell parser checks and isolated setup regression tests passed (runtime probe exit codes, external command failure, fresh install orchestration, rerun/environment reuse, configuration preservation, pip/npm/typecheck failure propagation, PATH/location cleanup and invalid-environment protection). Installation commands are mocked in these local orchestration tests to avoid changing running services; no actual winget installation is claimed. Added a Windows CI job for these tests and a real fresh-clone install; that job has not run here.
+
 ## SAP-style dashboard visual restoration
 
 - Restored the earlier Fiori-style blue shell, compact plant navigation, breadcrumbs, quick-test toolbar, exception banners, square panels, and dense materials grid. The grid again includes layer, vendor, storage location and lead time; inventory overview tiles and a matching research workspace complete the layout.

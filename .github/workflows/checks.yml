@@ -1,6 +1,24 @@
 name: Prototype regression checks
 on: [push, pull_request]
 jobs:
+  windows-setup:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Setup script regression tests
+        shell: powershell
+        run: .\tests\setup.Tests.ps1
+      - name: Fresh-clone installation
+        shell: powershell
+        run: .\setup.ps1 -SkipRuntimeInstall
   backend:
     runs-on: ubuntu-latest
     steps:
