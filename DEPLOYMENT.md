@@ -9,7 +9,7 @@ The package has local automated coverage but has **not been deployed to Google C
 ## 1. One-time preparation
 
 1. Create/select a Google Cloud project and link billing. Prefer a **new hackathon-only project** so other workloads do not consume allowances. Use `us-central1` for the documented setup.
-2. Open **Cloud Shell** in Google Cloud Console, or install [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) on Windows and run `gcloud auth login`. The deployment script is PowerShell: Windows PowerShell 5.1/PowerShell 7 works. In Linux Cloud Shell, install/use PowerShell first or run the script from Windows; it is not a Bash script. No local Docker, Node or Python installation is needed for deployment builds.
+2. Open **Cloud Shell** in Google Cloud Console, or install [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) on Windows (`winget install --id Google.CloudSDK -e`), **open a new terminal** and run `gcloud auth login`. The deployment script is PowerShell: Windows PowerShell 5.1/PowerShell 7 works. In Linux Cloud Shell, install/use PowerShell first or run the script from Windows; it is not a Bash script. No local Docker, Node or Python installation is needed for deployment builds.
 3. In Console, enable **Secret Manager API**, then create these two secrets (automatic replication is fine):
 
    | Secret name | Value |
@@ -27,7 +27,7 @@ The deploying account needs permission to enable services, create Firestore/Arti
 In PowerShell, at the repository root:
 
 ```powershell
-.\deploy\demo.ps1 -Project "gen-lang-client-0087046424" -EnablePublicDocumentResearch
+.\deploy\demo.ps1 -Project "your-project-id" -EnablePublicDocumentResearch
 ```
 
 If local script execution is blocked, use the process-scoped form:

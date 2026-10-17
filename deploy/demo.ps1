@@ -16,7 +16,20 @@ $models = @($GeminiModels.Split(",") | Where-Object { $_.Trim() })
 if ($models.Count -lt 1 -or $models.Count -gt 2) {
     throw "Provide one or two comma-separated Gemini model IDs available to your account."
 }
-$gcloudCommand = Get-Command gcloud -ErrorAction Stop
+$gcloudCommand = Get-Command gcloud -ErrorAction SilentlyContinue
+if (-not $gcloudCommand) {
+    # The installer adds gcloud to PATH only for new terminals; check its standard locations.
+    $installed = @(
+        "$env:LOCALAPPDATA\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd",
+        "$env:ProgramFiles\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd",
+        "${env:ProgramFiles(x86)}\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    if (-not $installed) {
+        throw ("Google Cloud CLI (gcloud) is not installed. Install it with: winget install --id Google.CloudSDK -e " +
+            "(or https://cloud.google.com/sdk/docs/install), open a NEW terminal, run: gcloud auth login, then rerun this script.")
+    }
+    $gcloudCommand = Get-Command $installed
+}
 
 function Gcloud {
     & $gcloudCommand @args --project=$Project --quiet
