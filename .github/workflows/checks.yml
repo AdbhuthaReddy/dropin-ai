@@ -68,7 +68,9 @@ jobs:
             sleep 2
           done
           curl -fsS http://localhost:8080/health
-          curl -fsS http://localhost:8080/ready
+          # No Gemini key in CI: readiness must be proxied to the API and report not configured.
+          ready=$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:8080/ready)
+          test "$ready" = "503"
           curl -fsS http://localhost:8080/api/inventory
           curl -fsS http://localhost:8080/erp-simulator > /tmp/demo-erp.html
           curl -fsS http://localhost:8080/datasheets > /dev/null

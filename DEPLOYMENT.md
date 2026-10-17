@@ -27,7 +27,7 @@ The deploying account needs permission to enable services, create Firestore/Arti
 In PowerShell, at the repository root:
 
 ```powershell
-.\deploy\demo.ps1 -Project "your-project-id" -EnablePublicDocumentResearch
+.\deploy\demo.ps1 -Project "gen-lang-client-0087046424" -EnablePublicDocumentResearch
 ```
 
 If local script execution is blocked, use the process-scoped form:
