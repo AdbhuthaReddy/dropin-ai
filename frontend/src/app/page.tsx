@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import ThreeDBudsPro from '@/components/ThreeDBudsPro';
 import AIPanel from '@/components/AIPanel';
-import { Sparkles, ShieldCheck, Box, Activity } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 
 export default function Dashboard() {
   const [panelOpen, setPanelOpen] = useState(false);
@@ -12,7 +12,7 @@ export default function Dashboard() {
   return (
     <main className="w-screen h-screen flex flex-col bg-[#f8f9fa] text-[#202124] overflow-hidden relative font-sans">
       {/* Google Store Aesthetic Header */}
-      <header className="h-16 border-b border-neutral-200/90 bg-white flex items-center px-8 justify-between shrink-0 shadow-xs z-20">
+      <header className="min-h-16 border-b border-neutral-200/90 bg-white flex flex-wrap gap-2 items-center px-3 py-2 sm:px-8 justify-between shrink-0 shadow-xs z-20">
         <div className="flex items-center gap-3">
           <div className="w-4 h-4 rounded-full bg-[#1a73e8] shadow-[0_0_8px_rgba(26,115,232,0.4)]" />
           <h1 className="text-[#202124] font-bold tracking-tight text-base">
@@ -25,7 +25,7 @@ export default function Dashboard() {
             href="/erp-simulator"
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 hover:bg-neutral-100 text-xs font-medium text-[#202124] transition-colors"
           >
-            <span>Open SAP Fiori ERP</span>
+            <span>Open ERP Simulator</span>
           </Link>
 
           <button

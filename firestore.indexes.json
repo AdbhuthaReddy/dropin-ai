@@ -1,0 +1,7 @@
+{
+  "indexes": [],
+  "fieldOverrides": [
+    { "collectionGroup": "research_jobs", "fieldPath": "input", "indexes": [] },
+    { "collectionGroup": "research_jobs", "fieldPath": "result", "indexes": [] }
+  ]
+}

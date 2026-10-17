@@ -1,192 +1,420 @@
+import asyncio
+import logging
 import os
-import random
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from pathlib import Path
+from typing import Annotated, Literal
+from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
-from app.services.gemini_engine import (
-    evaluate_component_shortage,
-    evaluate_datasheets,
-    AgentHardwareVerdict
-)
+from app.services.datasheets import MAX_PDF_BYTES, DocumentError, compare_documents, extract_pair
+from app.services.gemini_engine import AgentHardwareVerdict, ProviderUnavailable, evaluate_component_shortage, provider_configured
+from app.services.inventory import ConflictError, InventoryRepository
+from app.services.identity import cloud_mode, require_user, require_worker
 
-app = FastAPI(
-    title="DropIn.ai Enterprise Middleware",
-    description="Autonomous webhook receiver connecting SAP ERP to Gemini Agent with Live Google Search Grounding",
-    version="3.0.0"
-)
+logger = logging.getLogger(__name__)
+Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+Description = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+_document_slots = asyncio.Semaphore(2)
+DOCUMENT_DEADLINE_SECONDS = 55
 
-# Enable CORS for Next.js frontend communication
+
+class ObsoleteWorkflow(Exception):
+    pass
+
+
+def provider_detail(exc: ProviderUnavailable, reference: str) -> str:
+    reason = {
+        "quota_exhausted": "Gemini quota exhausted. Check provider limits or configure an available model/account.",
+        "not_configured": "Gemini is not configured. Set the backend API key and restart the service.",
+        "model_unavailable": "Configured Gemini models are unavailable. Check model IDs and account access.",
+        "deadline_exceeded": "Gemini request deadline exceeded. Retry later.",
+    }.get(exc.reason, "Research provider unavailable. Retry later or check backend logs.")
+    return f"{reason} Reference: {reference}"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if os.getenv("K_SERVICE") and not cloud_mode():
+        raise RuntimeError("Cloud Run requires STATE_BACKEND=firestore; ephemeral SQLite is forbidden.")
+    if cloud_mode():
+        from app.services.cloud_state import CloudRepository
+        from app.services.identity import firebase_app
+        for setting in ("GOOGLE_CLOUD_PROJECT", "WORKER_URL", "WORKER_AUDIENCE", "TASK_SERVICE_ACCOUNT", "TASK_REGION", "TASK_QUEUE"):
+            if not os.getenv(setting):
+                raise RuntimeError(f"Cloud configuration requires {setting}.")
+        if os.getenv("AUTO_RESEARCH_ENABLED") == "true" and os.getenv("PUBLIC_DATASHEET_CONSENT") != "true":
+            raise RuntimeError("Automatic public document research requires deployment-level consent.")
+        app.state.inventory = CloudRepository()
+        firebase_app()
+    else:
+        app.state.inventory = InventoryRepository(Path(os.getenv(
+            "INVENTORY_DB_PATH", str(Path(__file__).resolve().parents[1] / "data" / "inventory.sqlite3")
+        )))
+    app.state.inventory.recover_interrupted()
+    yield
+
+
+app = FastAPI(title="DropIn.ai Evidence Research Demo", version="5.0.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def correlate(request: Request, call_next):
+    request.state.request_id = str(uuid4())
+    started = time.monotonic()
+    if cloud_mode() and request.method == "POST" and request.url.path.startswith("/api/"):
+        try:
+            request.state.actor = await asyncio.to_thread(require_user, request)
+            length = request.headers.get("content-length")
+            if not length or not length.isdigit():
+                raise HTTPException(411, "A valid Content-Length is required.")
+            if int(length) > 22 * 1024 * 1024:
+                raise HTTPException(413, "Request exceeds the 22 MiB upload limit.")
+            if request.url.path == "/api/datasheets/compare":
+                from app.services.cloud_state import BudgetError
+                try:
+                    await asyncio.to_thread(repository(request).consume, request.state.actor)
+                except BudgetError as exc:
+                    raise HTTPException(429, str(exc)) from exc
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail},
+                                headers={"X-Request-ID": request.state.request_id})
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request.state.request_id
+    if request.method != "GET":
+        logger.info(
+            "request_id=%s method=%s path=%s status=%d elapsed_ms=%d",
+            request.state.request_id, request.method, request.url.path,
+            response.status_code, round((time.monotonic() - started) * 1000),
+        )
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[value.strip() for value in os.getenv(
+        "FRONTEND_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",") if value.strip()],
+    allow_credentials=False, allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-Request-ID", "Authorization"], expose_headers=["X-Request-ID"],
 )
 
-# Mount local datasheets directory for static assets
-current_dir = os.path.dirname(os.path.abspath(__file__))
-datasheet_dir = os.path.abspath(os.path.join(current_dir, "../datasheets"))
-if os.path.exists(datasheet_dir):
-    app.mount("/static/datasheets", StaticFiles(directory=datasheet_dir), name="datasheets")
 
-
-# ============================================================================
-# PYDANTIC ENTERPRISE SCHEMAS
-# ============================================================================
-class SAPLineDownWebhook(BaseModel):
-    erp_system: str = Field(default="SAP S/4HANA", description="Originating ERP system identifier")
-    target_mpn: str = Field(description="Target manufacturer part number experiencing line-down shortage")
-    target_description: str = Field(default="Unknown Component", description="Human-readable component description to anchor AI search context and prevent SMD top-marking code confusion")
-    search_mode: str = Field(default="exact", description="Search mode: 'exact' to find original MPN stock, or 'alternative' to engineer drop-in replacement")
-    inventory_level: int = Field(default=0, description="Current stock level in ERP inventory")
-    factory_location: Optional[str] = Field(default="Foxconn HYD-Plant 1", description="Assembly facility location")
-    plant_id: Optional[str] = Field(default="HYD-01", description="Plant / facility code")
-    lead_time_weeks: Optional[int] = Field(default=52, description="Supplier lead time in weeks")
-
-
-class ERPWritebackResponse(BaseModel):
-    workflow_route: str = Field(
-        default="ALTERNATIVE_ENGINEERED",
-        description="Must be 'EXACT_ORIGINAL_PROCURED', 'EXACT_ORIGINAL_UNAVAILABLE', 'ALTERNATIVE_ENGINEERED', or 'OEM_CUSTOM_ESCALATION'"
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    reference = getattr(request.state, "request_id", str(uuid4()))
+    logger.error("request_id=%s unexpected request failure", reference, exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Unexpected server failure. Reference: {reference}"},
+        headers={"X-Request-ID": reference},
     )
-    action_buy_url: str = Field(default="", description="Valid purchase URL on DigiKey, Mouser, Avnet, or manufacturer")
-    search_reasoning: str = Field(default="", description="2-sentence summary of the real-world manufacturer and specs found online BEFORE candidate_mpn")
-    original_mpn: str
-    candidate_mpn: str
-    aml_authorization: bool
-    confidence_score: float
-    procurement_status: str
-    purchase_order_id: Optional[str] = None
-    engineering_flags: List[str] = []
-    critical_differences: List[str] = []
-    distributor_quote: Optional[Dict[str, Any]] = None
-    message: str
-    timestamp: str
 
 
-class EvaluationRequest(BaseModel):
-    original_pdf_path: str
-    candidate_pdf_path: str
+class StrictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-# ============================================================================
-# ENTERPRISE AUTONOMOUS WEBHOOK ENDPOINT
-# POST /api/webhooks/sap-line-down
-# Connected to Multi-Agent Sequential Pipeline with Google Search Grounding
-# ============================================================================
-@app.post(
-    "/api/webhooks/sap-line-down",
-    response_model=ERPWritebackResponse,
-    status_code=status.HTTP_200_OK,
-    summary="SAP Line-Down Autonomous Webhook Receiver with Google Search Grounding"
-)
-async def handle_sap_line_down(webhook: SAPLineDownWebhook) -> ERPWritebackResponse:
-    """
-    Autonomous ERP Webhook Handler:
-    1. Ingests SAP Line-Down alert with target MPN and inventory level.
-    2. Passes target MPN to the Multi-Agent Sequential Pipeline:
-       - Stage 1: Procurement Agent queries live stock of exact target MPN across DigiKey, Mouser, Avnet.
-       - Stage 2: If out of stock, Engineering Agent performs datasheet analysis & pinout validation for drop-in replacement.
-    3. Evaluates technical constraints, calculates confidence score, and structures output.
-    4. Automatically generates an EDI Purchase Order for authorized components with direct buy URL.
-    """
-    now_iso = datetime.now(timezone.utc).isoformat()
+class SAPLineDownWebhook(StrictRequest):
+    target_mpn: Text
+    target_description: Description = "Unknown Component"
+    search_mode: Literal["exact", "alternative"] = "exact"
+    inventory_level: int = Field(default=0, ge=0, le=1_000_000_000, strict=True)
+    lead_time_weeks: int = Field(default=52, ge=0, le=520, strict=True)
+    erp_system: Text = "Local ERP simulation"
+    plant_id: Text = "HYD-01"
+    factory_location: Text = "Demo plant"
 
+
+class StockUpdate(StrictRequest):
+    stock: int = Field(ge=0, le=1_000_000_000, strict=True)
+    expected_revision: int = Field(ge=0, strict=True)
+
+
+class ResetRequest(StrictRequest):
+    expected_revision: int = Field(ge=0, strict=True)
+
+
+class ResearchRequest(ResetRequest):
+    request_id: UUID
+    search_mode: Literal["exact", "alternative"]
+
+
+class WorkflowRequest(ResetRequest):
+    pass
+
+
+def research_response(target_mpn: str, verdict: AgentHardwareVerdict) -> dict:
+    if verdict.workflow_route in ("OEM_CUSTOM_ESCALATION", "EXACT_ORIGINAL_UNAVAILABLE"):
+        status = verdict.workflow_route
+    else:
+        status = "HOLD_FOR_ENGINEERING_REVIEW"
+    return {
+        **verdict.model_dump(),
+        "original_mpn": target_mpn,
+        "aml_authorization": False,
+        "procurement_status": status,
+        "purchase_order_id": None,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def research(target_mpn: str, description: str, mode: str, request_id: str) -> dict:
     try:
-        # Step 1: Execute live multi-agent sequential pipeline
-        result = await evaluate_component_shortage(
-            webhook.target_mpn, 
-            webhook.target_description,
-            webhook.search_mode
-        )
-        verdict: AgentHardwareVerdict = result
+        verdict = await evaluate_component_shortage(target_mpn, description, mode)
+        return research_response(target_mpn, verdict)
+    except ProviderUnavailable as exc:
+        logger.warning("request_id=%s provider unavailable: %s", request_id, exc)
+        raise HTTPException(503, provider_detail(exc, request_id)) from exc
+    except (ValidationError, ValueError) as exc:
+        logger.exception("request_id=%s invalid research evidence", request_id)
+        raise HTTPException(502, f"Provider returned invalid research. Reference: {request_id}") from exc
+    except Exception as exc:
+        logger.exception("request_id=%s sourcing transport or processing failure", request_id)
+        raise HTTPException(502, f"Research failed. Reference: {request_id}") from exc
 
-        # Step 2: Auto-PO Generation based on confidence score & AML authorization
-        if verdict.workflow_route == "OEM_CUSTOM_ESCALATION":
-            po_number = None
-            procurement_status = "OEM_CUSTOM_ESCALATION"
-            msg = (
-                f"OEM Escalation Required: {webhook.target_mpn} is a proprietary custom component. "
-                "Commercial off-the-shelf drop-in replacements do not exist. Escalated to OEM engineering team."
+
+@app.post("/api/webhooks/sap-line-down")
+async def handle_sap_line_down(webhook: SAPLineDownWebhook, request: Request):
+    await asyncio.to_thread(require_user, request)
+    if cloud_mode():
+        raise HTTPException(410, "Use versioned inventory edits to trigger the durable workflow; this demo is not a SAP connector.")
+    return await research(
+        webhook.target_mpn, webhook.target_description, webhook.search_mode, request.state.request_id,
+    )
+
+
+def repository(request: Request) -> InventoryRepository:
+    return request.app.state.inventory
+
+
+async def cloud_change(request, operation, **kwargs):
+    from app.services.cloud_state import BudgetError, dispatch
+    actor = await asyncio.to_thread(require_user, request)
+    repo = repository(request)
+    try:
+        job_id = await asyncio.to_thread(repo.change, actor, operation, **kwargs)
+    except BudgetError as exc:
+        raise HTTPException(429, str(exc)) from exc
+    except (ConflictError, KeyError) as exc:
+        mutation_error(exc)
+    if job_id:
+        try:
+            await asyncio.to_thread(dispatch, job_id)
+        except Exception:
+            # The queued outbox document remains durable; authenticated Scheduler retries dispatch.
+            logger.exception("request_id=%s job_id=%s dispatch failed; awaiting outbox recovery",
+                             request.state.request_id, job_id)
+    return await asyncio.to_thread(repo.snapshot)
+
+
+def mutation_error(exc: Exception):
+    if isinstance(exc, ConflictError):
+        raise HTTPException(409, str(exc)) from exc
+    raise HTTPException(404, "Unknown BOM component.") from exc
+
+
+@app.get("/api/inventory")
+async def get_inventory(request: Request):
+    return await asyncio.to_thread(repository(request).snapshot)
+
+
+@app.get("/api/config")
+async def public_configuration():
+    return {"cloud_workflow": cloud_mode(),
+            "automatic_research": cloud_mode() and os.getenv("AUTO_RESEARCH_ENABLED") == "true"}
+
+
+@app.post("/api/inventory/reset")
+async def reset_inventory(body: ResetRequest, request: Request):
+    if cloud_mode():
+        return await cloud_change(request, "reset", revision=body.expected_revision)
+    repo = repository(request)
+    try:
+        repo.reset(body.expected_revision)
+    except ConflictError as exc:
+        mutation_error(exc)
+    return repo.snapshot()
+
+
+@app.post("/api/inventory/{item_id}/stock")
+async def update_stock(item_id: str, body: StockUpdate, request: Request):
+    if cloud_mode():
+        return await cloud_change(request, "stock", item_id=item_id, stock=body.stock, revision=body.expected_revision)
+    repo = repository(request)
+    try:
+        repo.update_stock(item_id, body.stock, body.expected_revision)
+    except (ConflictError, KeyError) as exc:
+        mutation_error(exc)
+    return repo.snapshot()
+
+
+@app.post("/api/inventory/{item_id}/research")
+async def request_research(item_id: str, body: ResearchRequest, request: Request):
+    if cloud_mode():
+        raise HTTPException(410, "Use the queued /workflow action for cloud research.")
+    repo = repository(request)
+    try:
+        started = repo.begin_research(item_id, body.request_id, body.search_mode, body.expected_revision)
+    except (ConflictError, KeyError) as exc:
+        mutation_error(exc)
+    if not started:
+        return repo.snapshot()
+    item = repo.get_item(item_id)
+    try:
+        result = await research(item["mpn"], item["description"], body.search_mode, request.state.request_id)
+        repo.finish_research(item_id, body.request_id, result=result)
+    except HTTPException as exc:
+        repo.finish_research(item_id, body.request_id, error=str(exc.detail))
+        raise
+    except asyncio.CancelledError:
+        repo.finish_research(item_id, body.request_id, error="Research cancelled; please retry.")
+        raise
+    except Exception as exc:
+        logger.exception("request_id=%s research failed", request.state.request_id)
+        repo.finish_research(item_id, body.request_id, error=f"Research failed. Reference: {request.state.request_id}")
+        raise HTTPException(502, f"Research failed. Reference: {request.state.request_id}") from exc
+    return repo.snapshot()
+
+
+@app.post("/api/datasheets/compare")
+async def compare_uploaded(
+    request: Request,
+    original: UploadFile = File(...),
+    candidate: UploadFile = File(...),
+    consent: bool = Form(False),
+    requirements: str = Form("", max_length=8000),
+):
+    try:
+        await asyncio.to_thread(require_user, request)
+        async with asyncio.timeout(DOCUMENT_DEADLINE_SECONDS), _document_slots:
+            documents = await extract_pair(
+                await original.read(MAX_PDF_BYTES + 1), "original.pdf",
+                await candidate.read(MAX_PDF_BYTES + 1), "candidate.pdf",
             )
-        elif verdict.workflow_route == "EXACT_ORIGINAL_UNAVAILABLE":
-            po_number = None
-            procurement_status = "EXACT_ORIGINAL_UNAVAILABLE"
-            msg = (
-                f"Exact Original Unavailable: {webhook.target_mpn} has 0 stock across global distributor catalogs. "
-                "Immediate drop-in alternative synthesis recommended."
-            )
-        elif verdict.aml_authorization and verdict.confidence_score >= 0.85:
-            po_number = f"PO-SAP-{random.randint(400000, 999999)}"
-            procurement_status = "AUTOMATIC_PO_DISPATCHED"
-            dist_name = verdict.distributor_quote.distributor if verdict.distributor_quote else "Distributor"
-            stock_qty = f"{verdict.distributor_quote.stock_available:,}" if verdict.distributor_quote else "25,000"
-            msg = (
-                f"AML Authorized: {verdict.candidate_mpn} validated as drop-in replacement for {webhook.target_mpn} "
-                f"({verdict.confidence_score * 100:.1f}% confidence via Google Search Grounding - Route: {verdict.workflow_route}). "
-                f"Autonomous EDI Purchase Order {po_number} dispatched to {dist_name} ({stock_qty} units available)."
-            )
-        else:
-            po_number = None
-            procurement_status = "HOLD_FOR_ENGINEERING_REVIEW"
-            msg = (
-                f"AML Review Required: Constraints detected for {verdict.candidate_mpn} replacing {webhook.target_mpn} "
-                f"({verdict.confidence_score * 100:.1f}% confidence). Routing to Hardware Engineering Team."
-            )
-
-        return ERPWritebackResponse(
-            workflow_route=verdict.workflow_route,
-            action_buy_url=verdict.action_buy_url,
-            search_reasoning=verdict.search_reasoning,
-            original_mpn=webhook.target_mpn,
-            candidate_mpn=verdict.candidate_mpn,
-            aml_authorization=verdict.aml_authorization,
-            confidence_score=verdict.confidence_score,
-            procurement_status=procurement_status,
-            purchase_order_id=po_number,
-            engineering_flags=verdict.engineering_flags,
-            critical_differences=verdict.critical_differences or verdict.engineering_flags,
-            distributor_quote=verdict.distributor_quote.model_dump() if verdict.distributor_quote else None,
-            message=msg,
-            timestamp=now_iso
-        )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Autonomous Multi-Agent Search Failed: {str(e)}"
-        )
+            return await compare_documents(*documents, requirements, consent)
+    except HTTPException:
+        raise
+    except DocumentError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ProviderUnavailable as exc:
+        raise HTTPException(503, provider_detail(exc, request.state.request_id)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(503, f"Document processing deadline exceeded. Reference: {request.state.request_id}") from exc
+    except (ValidationError, ValueError) as exc:
+        logger.exception("request_id=%s invalid document comparison", request.state.request_id)
+        raise HTTPException(502, "Provider comparison was invalid; no approval was created.") from exc
+    except Exception as exc:
+        logger.exception("request_id=%s document processing failure", request.state.request_id)
+        raise HTTPException(502, f"Document processing failed. Reference: {request.state.request_id}") from exc
+    finally:
+        await original.close()
+        await candidate.close()
 
 
-# ============================================================================
-# LEGACY ARBITRAGE ENDPOINT & HEALTH CHECK
-# ============================================================================
 @app.post("/api/evaluate-arbitrage")
-async def evaluate_arbitrage(req: EvaluationRequest):
-    try:
-        verdict = await evaluate_datasheets(
-            original_pdf_path=req.original_pdf_path, 
-            candidate_pdf_path=req.candidate_pdf_path
-        )
-        return verdict
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def evaluate_arbitrage():
+    raise HTTPException(
+        410, "Path-based PDF evaluation was removed. Upload both PDFs to /api/datasheets/compare; consent is required for Gemini processing.",
+    )
 
 
 @app.get("/health")
-async def health_check():
+async def health():
     return {
-        "status": "healthy",
-        "service": "DropIn.ai Autonomous Middleware",
-        "gemini_model": "gemini-3.8-flash (Google Search Grounding Enabled)",
-        "erp_connector": "SAP S/4HANA Active",
-        "mock_data": "COMPLETELY_REMOVED"
+        "status": "running", "provider_configured": provider_configured(),
+        "erp_connector": "not configured; shared demo inventory only",
+        "cloud_workflow": cloud_mode(),
+        "automatic_research": cloud_mode() and os.getenv("AUTO_RESEARCH_ENABLED") == "true",
+        "purchase_orders": "not created or transmitted",
+        "stock_verification": "not configured; search-reported estimates only",
+        "datasheets": "local PDF extraction; consent-gated Gemini comparison; human engineering review required",
     }
+
+
+@app.get("/ready")
+async def ready():
+    if not provider_configured():
+        raise HTTPException(503, "Gemini API key is not configured. Inventory and local PDF extraction remain available.")
+    return {"status": "configured", "provider_reachability": "not probed"}
+
+
+@app.post("/api/inventory/{item_id}/workflow")
+async def queue_workflow(item_id: str, body: WorkflowRequest, request: Request):
+    if not cloud_mode():
+        raise HTTPException(409, "Durable automatic workflow requires the Firestore/Cloud Tasks deployment.")
+    if os.getenv("PUBLIC_DATASHEET_CONSENT") != "true":
+        raise HTTPException(503, "Automatic public datasheet processing has not been enabled by the operator.")
+    return await cloud_change(request, "research", item_id=item_id, revision=body.expected_revision)
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job(job_id: UUID, request: Request):
+    if not cloud_mode():
+        raise HTTPException(404, "Cloud workflow is not enabled.")
+    try:
+        job = await asyncio.to_thread(repository(request).job, job_id.hex)
+    except KeyError as exc:
+        raise HTTPException(404, "Research job not found.") from exc
+    # Never expose user identity, private board requirements, tokens or internal exceptions.
+    return {key: job.get(key) for key in ("state", "stage", "created_at", "result", "error")}
+
+
+@app.post("/internal/dispatch")
+async def recover_jobs(request: Request):
+    await asyncio.to_thread(require_worker, request)
+    from app.services.cloud_state import dispatch
+    pending = await asyncio.to_thread(lambda: list(repository(request).pending_jobs()))
+    for job_id, attempt in pending:
+        await asyncio.to_thread(dispatch, job_id, attempt)
+    return {"dispatched": len(pending)}
+
+
+@app.post("/internal/jobs/{job_id}")
+async def process_job(job_id: UUID, request: Request):
+    await asyncio.to_thread(require_worker, request)
+    if os.getenv("PUBLIC_DATASHEET_CONSENT") != "true":
+        raise HTTPException(503, "Public document processing is not enabled.")
+    from app.services.workflow import run_workflow
+    from app.services.public_sources import SourceError
+    repo = repository(request)
+    token = job_id.hex
+    try:
+        job = await asyncio.to_thread(repo.transition, token, "starting", claim=True)
+    except ConflictError as exc:
+        # A duplicate must not acknowledge a still-running job whose first worker could crash.
+        raise HTTPException(503, "Worker lease active; retry later.") from exc
+    if not job or job["state"] == "failed":
+        return {"state": "not_running"}
+
+    async def progress(stage):
+        current = await asyncio.to_thread(repo.transition, token, stage)
+        if current is None:
+            raise ObsoleteWorkflow("Inventory changed; obsolete workflow stopped.")
+
+    try:
+        async with asyncio.timeout(360):
+            result = await run_workflow(job["input"], progress)
+        await asyncio.to_thread(repo.transition, token, "completed", result=result)
+    except ObsoleteWorkflow:
+        return {"state": "cancelled"}
+    except asyncio.CancelledError:
+        # A task killed by Cloud Run is recovered after its lease expires.
+        raise
+    except ProviderUnavailable as exc:
+        await asyncio.to_thread(repo.transition, token, "failed",
+                                error=provider_detail(exc, request.state.request_id))
+    except (SourceError, DocumentError) as exc:
+        await asyncio.to_thread(repo.transition, token, "failed",
+                                error=f"Evidence incomplete: {str(exc)[:2500]} Reference: {request.state.request_id}")
+    except Exception:
+        logger.exception("request_id=%s job_id=%s workflow failed", request.state.request_id, token)
+        await asyncio.to_thread(repo.transition, token, "failed",
+                                error=f"Research could not complete; no substitution approved. Reference: {request.state.request_id}")
+    return {"state": "recorded"}
