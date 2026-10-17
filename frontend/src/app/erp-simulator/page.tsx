@@ -1,982 +1,240 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import {
-  AlertOctagon,
-  CheckCircle2,
-  AlertTriangle,
-  RotateCw,
-  Search,
-  SlidersHorizontal,
-  Download,
-  Share2,
-  Printer,
-  ChevronRight,
-  ShieldCheck,
-  Building2,
-  Cpu,
-  Layers,
-  ExternalLink,
-  Info,
-  Clock,
-  ArrowRight,
-  FileCheck,
-  Edit3,
-  TrendingDown,
-  RefreshCcw,
-  ShoppingCart,
-  Check,
-  Sparkles,
-  X
+  AlertOctagon, Building2, CheckCircle2, ChevronRight, Cpu, Download,
+  ExternalLink, FileSearch, Info, Layers, Printer, RotateCw, Search,
 } from "lucide-react";
-import { useInventoryStore, InventoryItem } from "@/store/useInventoryStore";
+import ResearchCard from "@/components/ResearchCard";
+import { type InventoryItem, useInventoryStore } from "@/store/useInventoryStore";
 
-interface ERPWritebackResponse {
-  workflow_route?: string;
-  action_buy_url?: string;
-  search_reasoning?: string;
-  original_mpn: string;
-  candidate_mpn: string;
-  aml_authorization: boolean;
-  confidence_score: number;
-  procurement_status: string;
-  purchase_order_id: string | null;
-  engineering_flags?: string[];
-  critical_differences: string[];
-  distributor_quote?: {
-    distributor: string;
-    stock_available: number;
-    unit_price_usd: number;
-    lead_time_days: number;
-  };
-  message: string;
-  timestamp: string;
+function StockEditor({ item, disabled }: { item: InventoryItem; disabled: boolean }) {
+  const updateStock = useInventoryStore(state => state.updateStock);
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <form className="flex items-center justify-end gap-1" onSubmit={event => {
+      event.preventDefault();
+      if (draft === null || draft.trim() === "") return;
+      void updateStock(item.id, Number(draft));
+      setDraft(null);
+    }}>
+      <input aria-label={`Stock for ${item.mpn}`} type="number" min="0" max="1000000000" step="1" required
+        disabled={disabled} className="w-24 border border-[#b8b8b8] bg-white px-1.5 py-1 text-right font-mono text-[11px] outline-none focus:border-[#0a6ed1] disabled:bg-[#f2f2f2]"
+        value={draft ?? String(item.stock)} onChange={event => setDraft(event.target.value)} />
+      <button disabled={disabled || draft === null} className="border border-[#b8b8b8] bg-white px-2 py-1 text-[10px] text-[#0854a0] hover:bg-[#eaf3fc] disabled:opacity-40">Save</button>
+    </form>
+  );
 }
 
 export default function ERPSimulatorPage() {
-  const {
-    items,
-    updateStock,
-    setDropInResolution,
-    markResolved,
-    resetAll,
-    simulateShortage,
-    lastBreachedMpn
-  } = useInventoryStore();
-
-  const [mounted, setMounted] = useState(false);
-  const [isDispatching, setIsDispatching] = useState<boolean>(false);
-  const [dispatchingMpn, setDispatchingMpn] = useState<string | null>(null);
-  const [dispatchStage, setDispatchStage] = useState<number>(1);
-  const [toastMessage, setToToastMessage] = useState<string | null>(null);
-  const [writebackResponse, setWritebackResponse] = useState<ERPWritebackResponse | null>(null);
-  const [selectedFilter, setSelectedFilter] = useState<string>("ALL");
-  const [searchQuery, setSearchQuery] = useState<string>("");
-  const [selectedBreachMpn, setSelectedBreachMpn] = useState<string | null>(null);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  useEffect(() => {
-    let t1: NodeJS.Timeout;
-    let t2: NodeJS.Timeout;
-    if (isDispatching) {
-      setDispatchStage(1);
-      t1 = setTimeout(() => setDispatchStage(2), 2600);
-      t2 = setTimeout(() => setDispatchStage(3), 5500);
-    } else {
-      setDispatchStage(1);
-    }
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-    };
-  }, [isDispatching]);
-
-  // Compute all critical items: breached items OR items resolved with an AI verdict
-  const criticalItems = items.filter(
-    (item) => item.stock <= item.safetyStock || (item.isResolved && item.aiVerdict)
-  );
-  const unresolvedItems = criticalItems.filter((item) => !item.isResolved);
-  const breachedItems = items.filter((item) => item.stock <= item.safetyStock);
-
-  // Determine active component to target for the webhook dispatch
-  const activeTargetItem =
-    unresolvedItems.find((i) => i.mpn === selectedBreachMpn) ||
-    unresolvedItems.find((i) => i.mpn === lastBreachedMpn) ||
-    unresolvedItems[0] ||
-    items.find((i) => i.id === "pmic") ||
-    items[0];
-
-  const handleDispatchWebhook = async (targetOverride?: InventoryItem) => {
-    const target = targetOverride || activeTargetItem;
-    if (!target) return;
-
-    setDispatchingMpn(target.materialNumber || target.mpn);
-    setIsDispatching(true);
-    setWritebackResponse(null);
-    setToToastMessage(
-      `Autonomous Pipeline Dispatched for ${target.materialNumber || target.mpn}. Awaiting AML Authorization...`
-    );
-
-    const payload = {
-      erp_system: "SAP S/4HANA",
-      plant_id: "HYD-01",
-      target_mpn: target.materialNumber || target.mpn,
-      target_description: target.description,
-      search_mode: "alternative",
-      inventory_level: target.stock,
-      lead_time_weeks: parseInt(target.leadTime) || 12
-    };
-
-    try {
-      const response = await fetch("http://localhost:8080/api/webhooks/sap-line-down", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data: ERPWritebackResponse = await response.json();
-      setWritebackResponse(data);
-      setToToastMessage(`SAP EDI Response Received: ${data.procurement_status}`);
-
-      // Save verdict globally in Zustand
-      markResolved(target.materialNumber || target.mpn, data);
-
-      // Reflect replacement in the global Zustand store
-      if (data.aml_authorization && data.workflow_route !== 'OEM_CUSTOM_ESCALATION') {
-        setDropInResolution(
-          target.mpn,
-          data.candidate_mpn,
-          data.distributor_quote?.stock_available || 25000,
-          data.distributor_quote?.lead_time_days || 2,
-          data.distributor_quote?.distributor || "DigiKey / Octopart Global"
-        );
-      }
-    } catch (err: any) {
-      console.error("Autonomous Pipeline error:", err);
-      setToToastMessage(
-        "Autonomous Pipeline error: Unable to connect to DropIn.ai agent on localhost:8080. Ensure backend is active."
-      );
-    } finally {
-      setIsDispatching(false);
-      setDispatchingMpn(null);
-    }
-  };
-
-  const filteredItems = items.filter((r) => {
-    if (selectedFilter === "EXCEPTIONS" && r.stock > r.safetyStock) return false;
-    if (selectedFilter === "LINE_DOWN" && r.stock > 0) return false;
-    if (selectedFilter === "NORMAL" && r.stock <= r.safetyStock) return false;
-    if (
-      searchQuery.trim() !== "" &&
-      !r.mpn.toLowerCase().includes(searchQuery.toLowerCase()) &&
-      !r.name.toLowerCase().includes(searchQuery.toLowerCase()) &&
-      !r.vendor.toLowerCase().includes(searchQuery.toLowerCase())
-    ) {
-      return false;
-    }
-    return true;
-  });
-
-  if (!mounted) {
-    return (
-      <div className="min-h-screen bg-[#f4f4f4] flex items-center justify-center font-sans text-neutral-500">
-        Loading SAP S/4HANA Materials Management...
-      </div>
-    );
-  }
-
+  const { items, selectedPartId, setSelectedPartId, simulateShortage, resetAll, updateStock, loaded, syncError, writing } = useInventoryStore();
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("ALL");
+  const active = items.find(item => item.id === selectedPartId) || items.find(item => item.stock < item.safetyStock)
+    || items.find(item => item.id === "pmic") || items[0];
+  const critical = items.filter(item => item.stock < item.safetyStock);
+  const disabled = !loaded || !!syncError || writing;
+  const lineDown = items.filter(item => item.stock === 0).length;
+  const researching = items.filter(item => item.isProcessing).length;
+  const recorded = items.filter(item => item.aiVerdict || item.workflow?.stage === "completed").length;
+  const filtered = items.filter(item =>
+    (filter !== "EXCEPTIONS" || item.stock < item.safetyStock)
+    && (filter !== "LINE_DOWN" || item.stock === 0)
+    && (filter !== "NORMAL" || item.stock >= item.safetyStock)
+    && `${item.mpn} ${item.name} ${item.vendor}`.toLowerCase().includes(query.trim().toLowerCase()));
   return (
-    <div
-      className="min-h-screen bg-[#f4f4f4] text-[#333333] flex flex-col"
-      style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
-    >
-      {/* =========================================================================
-          SAP FIORI SHELL HEADER BAR
-          ========================================================================= */}
-      <header className="h-[48px] bg-[#0a6ed1] text-white flex items-center justify-between px-4 shrink-0 shadow-sm border-b border-[#0854a0] select-none">
+    <main className="flex min-h-screen flex-col bg-[#f4f4f4] text-[#333333]" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
+      <header className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b border-[#0854a0] bg-[#0a6ed1] px-4 py-2 text-white shadow-sm">
         <div className="flex items-center gap-3">
-          {/* SAP Emblem */}
-          <div className="bg-[#0854a0] px-2 py-0.5 text-[11px] font-bold tracking-wider rounded-none border border-[#1b7cdb]">
-            SAP
-          </div>
-          <div className="h-4 w-[1px] bg-white/20" />
-          <h1 className="text-[13px] font-semibold tracking-normal text-white flex items-center gap-2">
-            <span>SAP S/4HANA</span>
-            <span className="text-white/40">|</span>
-            <span className="text-white/90 font-normal">Materials Management - Plant HYD-01</span>
+          <span className="border border-[#1b7cdb] bg-[#0854a0] px-2 py-0.5 text-[11px] font-bold tracking-wider">SAP</span>
+          <span className="h-4 w-px bg-white/25" />
+          <h1 className="text-[13px] font-semibold">
+            SAP S/4HANA <span className="mx-2 text-white/50">|</span>
+            <span className="font-normal">Materials Management <span className="hidden sm:inline">- Plant HYD-01</span></span>
           </h1>
         </div>
-
-        {/* Shell Navigation & Right Actions */}
-        <div className="flex items-center gap-3 text-[12px]">
-          <div className="hidden md:flex items-center gap-2 text-white/80 text-[11px] bg-[#0854a0] px-2.5 py-1 border border-white/10">
-            <span>Client: 100</span>
-            <span>•</span>
-            <span>Sys: PRD</span>
-            <span>•</span>
-            <span>Plant: HYD-01</span>
-            <span>•</span>
-            <span>MRP: Active</span>
-          </div>
-
-          <Link
-            href="/"
-            className="flex items-center gap-1.5 px-3 py-1 bg-white text-[#0a6ed1] hover:bg-[#eaf3fc] font-bold text-[11px] uppercase tracking-wider transition-colors shadow-xs"
-            title="Launch DropIn.ai 3D Exploded Twin"
-          >
-            <Cpu className="w-3.5 h-3.5" />
-            <span>DropIn.ai 3D Twin</span>
-            {breachedItems.length > 0 && (
-              <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.2 rounded-full font-bold ml-0.5">
-                {breachedItems.length}
-              </span>
-            )}
-            <ExternalLink className="w-3 h-3 ml-0.5" />
+        <nav aria-label="Workspace navigation" className="flex flex-wrap items-center gap-3 text-[11px]">
+          <span className="hidden border border-white/15 bg-[#0854a0] px-2.5 py-1 text-white/90 xl:block">
+            Client: 100 <span className="mx-2 text-white/40">|</span> Sys: DEMO
+            <span className="mx-2 text-white/40">|</span> Plant: HYD-01
+          </span>
+          <Link href="/datasheets" className="flex items-center gap-1.5 border border-white/40 px-2.5 py-1 hover:bg-[#0854a0]">
+            <FileSearch className="size-3.5" /> PDF comparison
           </Link>
-        </div>
+          <Link href="/" className="flex items-center gap-1.5 bg-white px-3 py-1 font-bold text-[#0a6ed1] hover:bg-[#eaf3fc]">
+            <Cpu className="size-3.5" /> DropIn.ai 3D Twin
+            {loaded && critical.length > 0 && <span className="rounded-full bg-[#bb0000] px-1.5 text-[10px] text-white">{critical.length}</span>}
+            <ExternalLink className="size-3" />
+          </Link>
+        </nav>
       </header>
-
-      {/* =========================================================================
-          FIORI SUB-HEADER & QUICK TEST TOOLBAR
-          ========================================================================= */}
-      <div className="bg-white border-b border-[#cccccc] px-6 py-2.5 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-1 text-[11px] text-[#666666] mb-0.5">
-            <span>Home</span>
-            <ChevronRight className="w-3 h-3" />
-            <span>Manufacturing Logistics</span>
-            <ChevronRight className="w-3 h-3" />
-            <span>Plant HYD-01 (Foxconn Hyderabad)</span>
-            <ChevronRight className="w-3 h-3" />
-            <span className="text-[#333333] font-semibold">Stock Monitor</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <h2 className="text-[16px] font-bold text-[#222222]">
-              Stock Overview & Safety Threshold Monitor: Pixel Buds Pro 2 (GRVCC)
-            </h2>
-          </div>
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#cccccc] bg-white px-4 py-3 sm:px-6">
+        <div className="min-w-0">
+          <nav aria-label="Breadcrumb" className="mb-1 flex flex-wrap items-center gap-1 text-[11px] text-[#666666]">
+            <Link href="/" className="hover:text-[#0a6ed1]">Home</Link><ChevronRight className="size-3" />
+            <span>Manufacturing Logistics</span><ChevronRight className="size-3" />
+            <span>Plant HYD-01</span><ChevronRight className="size-3" />
+            <span className="font-semibold text-[#333333]">Stock Monitor</span>
+          </nav>
+          <h2 className="text-[16px] font-bold text-[#222222]">Stock Overview &amp; Safety Threshold Monitor</h2>
+          <p className="mt-0.5 text-[11px] text-[#666666]">Pixel Buds Pro 2 (GRVCC) / Bill of Materials / Shared demo inventory</p>
         </div>
-
-        {/* Quick Testing Actions for Judges */}
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] text-[#666666] font-semibold">Quick Test:</span>
-          <button
-            onClick={() => simulateShortage("pmic")}
-            className="px-2 py-1 bg-[#fff3e0] hover:bg-[#ffe0b2] border border-[#ffb74d] text-[11px] text-[#b71c1c] font-semibold cursor-pointer"
-          >
-            Drop PMIC
-          </button>
-          <button
-            onClick={() => simulateShortage("battery")}
-            className="px-2 py-1 bg-[#fff3e0] hover:bg-[#ffe0b2] border border-[#ffb74d] text-[11px] text-[#b71c1c] font-semibold cursor-pointer"
-          >
-            Drop Battery
-          </button>
-          <button
-            onClick={() => simulateShortage("tensor-a1")}
-            className="px-2 py-1 bg-[#fff3e0] hover:bg-[#ffe0b2] border border-[#ffb74d] text-[11px] text-[#b71c1c] font-semibold cursor-pointer"
-          >
-            Drop Tensor A1
-          </button>
-          <button
-            onClick={resetAll}
-            className="flex items-center gap-1 px-2.5 py-1 bg-white border border-[#cccccc] hover:bg-[#f9f9f9] text-[11px] text-[#333333] cursor-pointer"
-            title="Reset simulation state to original stock numbers"
-          >
-            <RotateCw className="w-3 h-3 text-[#666666]" />
-            <span>Reset All</span>
-          </button>
+        <div className="flex flex-wrap items-center gap-2 text-[11px] [&_button]:disabled:cursor-not-allowed [&_button]:disabled:opacity-40">
+          <span className="font-semibold text-[#666666]">Quick Test:</span>
+          {[
+            ["pmic", "Drop PMIC"], ["battery", "Drop Battery"], ["tensor-a1", "Drop Tensor A1"],
+          ].map(([id, label]) => <button key={id} disabled={disabled}
+            className="border border-[#ffb74d] bg-[#fff3e0] px-2 py-1 font-semibold text-[#b71c1c] hover:bg-[#ffe0b2]"
+            onClick={() => void simulateShortage(id)}>{label}</button>)}
+          <button disabled={disabled} className="flex items-center gap-1 border border-[#cccccc] bg-white px-2.5 py-1 hover:bg-[#f2f2f2]"
+            onClick={() => void resetAll()}><RotateCw className="size-3" /> Reset All</button>
         </div>
       </div>
-
-      {/* =========================================================================
-          MAIN WORKSPACE CONTAINER
-          ========================================================================= */}
-      <main className="flex-1 w-full max-w-[1440px] mx-auto p-6 flex flex-col gap-5">
-        {/* =======================================================================
-            TOAST / STATE MESSAGE NOTIFICATION BANNER
-            ======================================================================= */}
-        {toastMessage && (
-          <div
-            className={`px-4 py-2.5 text-[12px] flex items-center justify-between border ${
-              isDispatching
-                ? "bg-[#fff8e1] border-[#ffe082] text-[#8d6e00]"
-                : writebackResponse?.aml_authorization
-                ? "bg-[#e8f5e9] border-[#a5d6a7] text-[#1b5e20]"
-                : "bg-[#e3f2fd] border-[#90caf9] text-[#0d47a1]"
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              {isDispatching ? (
-                <RotateCw className="w-4 h-4 animate-spin text-[#ff8f00]" />
-              ) : writebackResponse?.aml_authorization ? (
-                <CheckCircle2 className="w-4 h-4 text-[#2e7d32]" />
-              ) : (
-                <Info className="w-4 h-4 text-[#0a6ed1]" />
-              )}
-              <span className="font-semibold">{toastMessage}</span>
+      <div className="mx-auto flex w-full max-w-[1600px] flex-1 flex-col gap-4 p-3 pb-24 sm:p-6">
+        <div className="flex items-start gap-2 border border-[#b8d8f3] bg-[#edf5fc] px-3 py-2 text-[11px] text-[#264966]">
+          <Info className="mt-0.5 size-3.5 shrink-0" />
+          <p><strong>SAP-style simulation - no SAP connection.</strong> On-hand stock is shared between dashboards.
+            Only explicit stock edits change inventory; research is not a receipt, purchase order or engineering approval.</p>
+        </div>
+        <section aria-label="Inventory overview" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {[
+            { label: "BOM components", value: items.length, detail: "Plant HYD-01", icon: Layers, color: "text-[#0a6ed1]" },
+            { label: "Below safety stock", value: critical.length, detail: `${lineDown} line-down component(s)`, icon: AlertOctagon, color: "text-[#bb0000]" },
+            { label: "Stock in spec", value: items.length - critical.length, detail: "At or above safety threshold", icon: CheckCircle2, color: "text-[#107e3e]" },
+            { label: "Research recorded", value: recorded, detail: `${researching} running / not engineering approval`, icon: FileSearch, color: "text-[#0a6ed1]" },
+          ].map(metric => <div key={metric.label} className="border border-[#cccccc] bg-white px-4 py-3 shadow-xs">
+            <div className="flex items-center justify-between gap-2 text-[11px] text-[#666666]">
+              <span>{metric.label}</span><metric.icon className={`size-4 ${metric.color}`} />
             </div>
-            {writebackResponse && (
-              <span className="text-[11px] opacity-80 font-mono">
-                {new Date(writebackResponse.timestamp).toLocaleTimeString()}
-              </span>
-            )}
+            <p className={`my-1 text-[26px] leading-tight ${metric.color}`}>{loaded && !syncError ? metric.value : "--"}</p>
+            <p className="text-[10px] text-[#777777]">{metric.detail}</p>
+          </div>)}
+        </section>
+        {loaded && critical.map(item => <section key={item.id} aria-label={`Stock exception for ${item.mpn}`}
+          className="border border-l-4 border-[#d32f2f] bg-white p-4 shadow-xs">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="border border-[#ffcdd2] bg-[#ffebee] p-2"><AlertOctagon className="size-5 text-[#bb0000]" /></span>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-[12px] font-bold uppercase tracking-wide text-[#b71c1c]">Exceptions Log: Safety Stock Breach Detected</h3>
+                  <span className="bg-[#bb0000] px-1.5 py-0.5 text-[9px] font-bold text-white">{item.stock === 0 ? "LINE DOWN" : "STOCK EXCEPTION"}</span>
+                </div>
+                <p className="mt-1 text-[11px] leading-relaxed">
+                  <strong>{item.mpn}</strong> ({item.name}): <strong className="text-[#bb0000]">{item.stock.toLocaleString()} EA</strong>
+                  {" / "}safety stock {item.safetyStock.toLocaleString()} EA. Research does not clear this exception.
+                </p>
+                <p className="mt-1 text-[10px] text-[#666666]">
+                  {item.isProcessing ? `Research running${item.workflow ? `: ${item.workflow.stage.replaceAll("_", " ")}` : ""}.`
+                    : item.researchError ? "Last research request failed. Review details before retrying."
+                    : item.aiVerdict || item.workflow?.stage === "completed" ? "Research recorded. Human engineering review required."
+                    : "No research recorded for this stock condition."}
+                </p>
+              </div>
+            </div>
+            <a href="#component-research" onClick={() => setSelectedPartId(item.id)}
+              className="flex items-center gap-1.5 border border-[#0854a0] bg-[#0a6ed1] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#0854a0]">
+              <FileSearch className="size-3.5" /> Review research <ChevronRight className="size-3" />
+            </a>
           </div>
-        )}
-
-        {/* =======================================================================
-            EXCEPTIONS LOG ALERT BANNERS (RENDERED FOR ANY !item.isResolved SHORTAGES)
-            ======================================================================= */}
-        {criticalItems
-          .filter((item) => !item.isResolved)
-          .map((item) => (
-            <section key={'exception-' + item.id} className="bg-white border-2 border-[#d32f2f] p-4 shadow-xs">
-              <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
-                <div className="flex items-start gap-3">
-                  <div className="p-2 bg-[#ffebee] border border-[#ffcdd2] text-[#c62828] shrink-0 mt-0.5">
-                    <AlertOctagon className="w-5 h-5 text-[#d32f2f]" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-[13px] font-bold text-[#b71c1c] uppercase tracking-wide">
-                        Exceptions Log: Safety Stock Breach Detected
-                      </h3>
-                      <span className="bg-[#b71c1c] text-white text-[10px] font-bold px-1.5 py-0.2 tracking-wider">
-                        CRITICAL MRP ESCALATION
-                      </span>
-                    </div>
-
-                    <p className="text-[12px] text-[#444444] mt-1 leading-snug">
-                      Target component <strong className="text-[#b71c1c]">{item.materialNumber}</strong> ({item.name})
-                      has depleted to <strong className="text-[#b71c1c]">{item.stock.toLocaleString()} EA</strong>,
-                      breaching the safety stock threshold of <strong className="text-[#222222]">{item.safetyStock.toLocaleString()} EA</strong> (Lead Time: {item.leadTime}).
-                    </p>
-
-                    <p className="text-[11px] text-[#777777] mt-1.5">
-                      Automated Rule: Trigger Autonomous Pipeline with target MPN for immediate secondary market cross-reference & AML verification.
-                    </p>
-                  </div>
-                </div>
-
-                {/* PRIMARY ENTERPRISE BUTTON (SQUARE CORNERS, SAP BLUE #0a6ed1) */}
-                <div className="shrink-0 flex items-center gap-2 w-full lg:w-auto">
-                  <button
-                    type="button"
-                    onClick={() => handleDispatchWebhook(item)}
-                    disabled={isDispatching}
-                    className="w-full lg:w-auto px-5 py-2.5 bg-[#0a6ed1] hover:bg-[#0854a0] active:bg-[#064380] disabled:bg-[#90caf9] text-white font-bold text-[12px] uppercase tracking-wider transition-colors shadow-xs flex items-center justify-center gap-2 rounded-none cursor-pointer border border-[#0854a0]"
-                  >
-                    {isDispatching && dispatchingMpn === item.materialNumber ? (
-                      <>
-                        <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Running Autonomous Pipeline...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Share2 className="w-3.5 h-3.5" />
-                        <span>Trigger Autonomous Pipeline for {item.materialNumber}</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {/* MULTI-STEP TIMELINE DURING DISPATCH */}
-              {isDispatching && dispatchingMpn === item.materialNumber && (
-                <div className="mt-3 pt-3 border-t border-[#ef9a9a] bg-white p-3.5 border border-[#ffcdd2]">
-                  <div className="flex items-center justify-between mb-3 pb-1.5 border-b border-[#f0f0f0]">
-                    <span className="text-[11px] font-bold text-[#0a6ed1] uppercase tracking-wide flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5 animate-spin text-[#0a6ed1]" />
-                      Multi-Agent Sequential Pipeline in Progress
-                    </span>
-                    <span className="text-[10px] font-mono text-[#777777]">GEMINI 3.8 FLASH WITH SEARCH GROUNDING</span>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    {/* Step 1 */}
-                    <div className="flex items-start gap-2.5">
-                      <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 transition-colors ${
-                        dispatchStage > 1 ? 'bg-[#2e7d32] text-white' : dispatchStage === 1 ? 'bg-[#0a6ed1] text-white animate-pulse' : 'bg-[#e0e0e0] text-[#777777]'
-                      }`}>
-                        {dispatchStage > 1 ? <Check className="w-3 h-3" /> : 1}
-                      </div>
-                      <div>
-                        <span className={`text-[11px] font-bold ${dispatchStage >= 1 ? 'text-[#222222]' : 'text-[#888888]'}`}>
-                          Step 1: Attempting to procure original {item.materialNumber} globally...
-                        </span>
-                        <p className="text-[10px] text-[#666666]">
-                          Querying live stock and lead times across DigiKey, Mouser, and Avnet distributor catalogs
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Step 2 */}
-                    <div className="flex items-start gap-2.5">
-                      <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 transition-colors ${
-                        dispatchStage > 2 ? 'bg-[#2e7d32] text-white' : dispatchStage === 2 ? 'bg-[#0a6ed1] text-white animate-pulse' : 'bg-[#e0e0e0] text-[#777777]'
-                      }`}>
-                        {dispatchStage > 2 ? <Check className="w-3 h-3" /> : 2}
-                      </div>
-                      <div>
-                        <span className={`text-[11px] font-bold ${dispatchStage >= 2 ? 'text-[#222222]' : 'text-[#888888]'}`}>
-                          Step 2: Original out of stock. Initiating Engineering Agent for datasheet analysis...
-                        </span>
-                        <p className="text-[10px] text-[#666666]">
-                          Multimodal pinout matching, thermal rating verification, and drop-in search
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Step 3 */}
-                    <div className="flex items-start gap-2.5">
-                      <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 transition-colors ${
-                        dispatchStage === 3 ? 'bg-[#0a6ed1] text-white animate-pulse' : 'bg-[#e0e0e0] text-[#777777]'
-                      }`}>
-                        3
-                      </div>
-                      <div>
-                        <span className={`text-[11px] font-bold ${dispatchStage === 3 ? 'text-[#222222]' : 'text-[#888888]'}`}>
-                          Step 3: EDI Purchase Order Dispatch & SAP Writeback
-                        </span>
-                        <p className="text-[10px] text-[#666666]">
-                          Generating automated Purchase Order and transmitting S/4HANA material master writeback
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </section>
-          ))}
-
-        {/* =======================================================================
-            DYNAMIC SAP S/4HANA EDI WRITEBACK CONFIRMATION (RESOLVED ITEMS)
-            ======================================================================= */}
-        {criticalItems
-          .filter((item) => item.isResolved && item.aiVerdict)
-          .map((item) => {
-            const v = item.aiVerdict;
-            const channel =
-              v.distributor_quote?.distributor ||
-              (v.workflow_route === "OEM_CUSTOM_ESCALATION" ? "OEM Escalate" : "Distributor Direct");
-
-            const confidenceDisplay =
-              typeof v.confidence_score === "number"
-                ? v.confidence_score <= 1
-                  ? `${(v.confidence_score * 100).toFixed(1)}%`
-                  : `${v.confidence_score}%`
-                : `${v.confidence_score || 95}%`;
-
-            const auditTrail = `[EDI ROUTE: ${v.workflow_route || "ALTERNATIVE_ENGINEERED"}] ${
-              v.message ||
-              (v.workflow_route === "OEM_CUSTOM_ESCALATION"
-                ? `Escalated ${item.materialNumber} to OEM engineering team. Commercial market catalog exhausted; proprietary custom tooling required.`
-                : v.workflow_route === "EXACT_ORIGINAL_PROCURED"
-                ? `Exact original ${item.materialNumber} located with distributor stock. Automated PO dispatched via EDI gateway.`
-                : `Drop-in replacement ${v.candidate_mpn} authorized for ${item.materialNumber}. S/4HANA material master BOM updated and PO confirmed.`)
-            }`;
-
-            return (
-              <section key={"writeback-" + item.id} className="bg-white border border-[#cccccc] p-4 shadow-xs">
-                <div className="flex items-center justify-between pb-3 mb-3 border-b border-[#e5e5e5]">
-                  <div className="flex items-center gap-2">
-                    {v.workflow_route === "EXACT_ORIGINAL_UNAVAILABLE" ? (
-                      <AlertOctagon className="w-5 h-5 text-[#d32f2f]" />
-                    ) : v.aml_authorization && v.workflow_route !== "OEM_CUSTOM_ESCALATION" ? (
-                      <CheckCircle2 className="w-5 h-5 text-[#2e7d32]" />
-                    ) : (
-                      <AlertTriangle className="w-5 h-5 text-[#f57c00]" />
-                    )}
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h4 className="text-[13px] font-bold text-[#222222]">
-                          SAP S/4HANA EDI Writeback Confirmation - DropIn.ai Autonomous Pipeline
-                        </h4>
-                        {v.workflow_route && (
-                          <span
-                            className={`px-2 py-0.5 text-[9px] font-bold font-mono tracking-wider uppercase border ${
-                              v.workflow_route === "OEM_CUSTOM_ESCALATION"
-                                ? "text-orange-600 bg-orange-50 border-orange-200"
-                                : v.workflow_route === "EXACT_ORIGINAL_UNAVAILABLE"
-                                ? "text-red-700 bg-red-50 border-red-300"
-                                : v.workflow_route === "EXACT_ORIGINAL_PROCURED"
-                                ? "bg-[#e8f5e9] text-[#2e7d32] border-[#a5d6a7]"
-                                : "bg-[#e3f2fd] text-[#0a6ed1] border-[#90caf9]"
-                            }`}
-                          >
-                            {v.workflow_route === "OEM_CUSTOM_ESCALATION"
-                              ? "OEM ESCALATION REQUIRED"
-                              : v.workflow_route === "EXACT_ORIGINAL_UNAVAILABLE"
-                              ? "EXACT MATCH UNAVAILABLE"
-                              : v.workflow_route === "EXACT_ORIGINAL_PROCURED"
-                              ? "Exact OEM Procured"
-                              : "Alternative Engineered"}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-[#666666]">
-                        Execution Status:{" "}
-                        <span
-                          className={`font-bold ${
-                            v.workflow_route === "OEM_CUSTOM_ESCALATION"
-                              ? "text-orange-600"
-                              : v.workflow_route === "EXACT_ORIGINAL_UNAVAILABLE"
-                              ? "text-[#c62828]"
-                              : v.aml_authorization
-                              ? "text-[#2e7d32]"
-                              : "text-[#c62828]"
-                          }`}
-                        >
-                          {v.procurement_status ||
-                            (v.workflow_route === "OEM_CUSTOM_ESCALATION"
-                              ? "OEM_ESCALATED"
-                              : v.workflow_route === "EXACT_ORIGINAL_UNAVAILABLE"
-                              ? "EXACT_ORIGINAL_UNAVAILABLE"
-                              : "EDI_TRANSMITTED")}
-                        </span>
-                      </p>
-                    </div>
-                  </div>
-
-                  {v.purchase_order_id && (
-                    <div className="text-right">
-                      <div className="text-[10px] text-[#777777] uppercase tracking-wider font-semibold">
-                        Generated EDI Purchase Order
-                      </div>
-                      <div className="text-[13px] font-bold text-[#0a6ed1] font-mono">
-                        {v.purchase_order_id}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-[12px] bg-[#f9f9f9] p-3 border border-[#e0e0e0] mb-3">
-                  <div>
-                    <span className="text-[10px] uppercase text-[#777777] font-semibold block">Target Component</span>
-                    <span className="font-bold text-[#333333]">{item.materialNumber}</span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] uppercase text-[#777777] font-semibold block">
-                      {v.workflow_route === "OEM_CUSTOM_ESCALATION"
-                        ? "Escalation Status"
-                        : "Procured / Drop-In Replacement"}
-                    </span>
-                    <span
-                      className={`font-bold ${
-                        v.workflow_route === "OEM_CUSTOM_ESCALATION"
-                          ? "text-orange-600"
-                          : v.workflow_route === "EXACT_ORIGINAL_UNAVAILABLE"
-                          ? "text-red-600"
-                          : "text-[#0a6ed1]"
-                      }`}
-                    >
-                      {v.candidate_mpn}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] uppercase text-[#777777] font-semibold block">AI Confidence Score</span>
-                    <span className="font-bold text-[#2e7d32]">
-                      {confidenceDisplay} (Gemini Multimodal)
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] uppercase text-[#777777] font-semibold block">Procurement Channel</span>
-                    <span className="font-bold text-[#333333]">
-                      {channel}
-                    </span>
-                  </div>
-                </div>
-
-                {v.search_reasoning && (
-                  <div className="text-[11px] text-[#1b5e20] bg-[#e8f5e9] p-3 border border-[#c8e6c9] leading-relaxed mb-3">
-                    <div className="font-bold text-[#1b5e20] flex items-center gap-1.5 mb-1">
-                      <ShieldCheck className="w-3.5 h-3.5 text-[#2e7d32]" />
-                      <span>Google Search Grounding & Chain-of-Thought Reasoning:</span>
-                    </div>
-                    <p className="text-[#2e7d32] font-medium leading-relaxed">{v.search_reasoning}</p>
-                  </div>
-                )}
-
-                {/* ACTIONABLE HIGHLY VISIBLE PROCUREMENT BUTTON */}
-                {v.workflow_route === "EXACT_ORIGINAL_UNAVAILABLE" ? (
-                  <div className="mb-3 p-3 bg-neutral-100 border border-neutral-300 flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-bold text-[#c62828] uppercase tracking-wider">
-                          Exact Original Stock Exhausted:
-                        </span>
-                        <span className="text-[11px] text-[#c62828] font-bold font-mono">
-                          0 Units Available on Global Distributors
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-[#555555] font-mono mt-0.5">
-                        Target MPN {item.materialNumber} is unavailable or obsolete on commercial distributor networks.
-                      </p>
-                    </div>
-
-                    <button
-                      type="button"
-                      disabled
-                      className="px-5 py-2.5 bg-neutral-300 text-neutral-600 font-bold text-[12px] uppercase tracking-wider shadow-none inline-flex items-center gap-2 border border-neutral-400 cursor-not-allowed select-none"
-                    >
-                      <X className="w-4 h-4 shrink-0" />
-                      <span>OUT OF STOCK ON DISTRIBUTOR NETWORKS</span>
-                    </button>
-                  </div>
-                ) : v.action_buy_url && (
-                  <div
-                    className={`mb-3 p-3 ${
-                      v.workflow_route === "OEM_CUSTOM_ESCALATION"
-                        ? "bg-[#fff3e0] border-[#ffe0b2]"
-                        : "bg-[#e8f0fe] border-[#d2e3fc]"
-                    } border flex flex-wrap items-center justify-between gap-3`}
-                  >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        {v.workflow_route === "OEM_CUSTOM_ESCALATION" ? (
-                          <span className="text-[11px] font-bold text-[#e65100] uppercase tracking-wider">
-                            Proprietary Custom Component - Commercial Sourcing Unavailable
-                          </span>
-                        ) : (
-                          <>
-                            <span className="text-[11px] font-bold text-[#1967d2] uppercase tracking-wider">
-                              Verified Distributor Inventory Channel:
-                            </span>
-                            <span className="text-[11px] text-[#137333] font-bold font-mono">
-                              {v.distributor_quote?.stock_available !== undefined
-                                ? `${v.distributor_quote.stock_available.toLocaleString()} Units In Stock`
-                                : "Immediate Stock Available"}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                      <p className="text-[10px] text-[#5f6368] font-mono mt-0.5">
-                        {v.workflow_route === "OEM_CUSTOM_ESCALATION"
-                          ? `OEM Contact / Escalation Portal: ${v.action_buy_url}`
-                          : `Catalog Direct URL: ${v.action_buy_url}`}
-                      </p>
-                    </div>
-
-                    <a
-                      href={v.action_buy_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={`px-5 py-2.5 ${
-                        v.workflow_route === "OEM_CUSTOM_ESCALATION"
-                          ? "bg-[#c62828] hover:bg-[#b71c1c] active:bg-[#8e0000] border-[#b71c1c]"
-                          : "bg-[#0a6ed1] hover:bg-[#0854a0] active:bg-[#064380] border-[#0854a0]"
-                      } text-white font-bold text-[12px] uppercase tracking-wider transition-colors shadow-xs inline-flex items-center gap-2 border cursor-pointer`}
-                    >
-                      {v.workflow_route === "OEM_CUSTOM_ESCALATION" ? (
-                        <>
-                          <AlertTriangle className="w-4 h-4 shrink-0" />
-                          <span>ESCALATE TO OEM ENGINEERING</span>
-                        </>
-                      ) : (
-                        <>
-                          <ShoppingCart className="w-4 h-4 shrink-0" />
-                          <span>Procure Component via {channel}</span>
-                        </>
-                      )}
-                      <ExternalLink className="w-3.5 h-3.5 shrink-0" />
-                    </a>
-                  </div>
-                )}
-
-                <div className="text-[11px] text-[#555555] bg-white p-2.5 border border-[#e0e0e0] leading-relaxed">
-                  <span className="font-bold text-[#222222]">System Audit Trail: </span>
-                  {auditTrail}
-                </div>
-
-                {v.critical_differences && v.critical_differences.length > 0 && (
-                  <div className="mt-3 text-[11px]">
-                    <span className="font-bold text-[#222222]">Drop-In Engineering Constraints Verified:</span>
-                    <ul className="list-disc pl-5 mt-1 space-y-0.5 text-[#555555]">
-                      {v.critical_differences.map((diff: string, idx: number) => (
-                        <li key={idx}>{diff}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </section>
-            );
-          })}
-
-        {/* =======================================================================
-            SAP DENSE DATA TABLE CONTAINER
-            ======================================================================= */}
-        <section className="bg-white border border-[#cccccc] shadow-xs">
-          {/* Table Toolbar */}
-          <div className="px-4 py-2 border-b border-[#cccccc] bg-[#f2f2f2] flex flex-wrap items-center justify-between gap-3 text-[12px]">
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-[#333333] text-[12px]">BOM Line Items:</span>
-              <div className="flex items-center gap-1 border border-[#cccccc] bg-white">
-                <button
-                  onClick={() => setSelectedFilter("ALL")}
-                  className={`px-2 py-0.5 text-[11px] cursor-pointer ${
-                    selectedFilter === "ALL" ? "bg-[#0a6ed1] text-white font-bold" : "text-[#555555] hover:bg-[#f2f2f2]"
-                  }`}
-                >
-                  All ({items.length})
-                </button>
-                <button
-                  onClick={() => setSelectedFilter("EXCEPTIONS")}
-                  className={`px-2 py-0.5 text-[11px] cursor-pointer ${
-                    selectedFilter === "EXCEPTIONS"
-                      ? "bg-[#d32f2f] text-white font-bold"
-                      : "text-[#555555] hover:bg-[#f2f2f2]"
-                  }`}
-                >
-                  Below Safety ({breachedItems.length})
-                </button>
-                <button
-                  onClick={() => setSelectedFilter("NORMAL")}
-                  className={`px-2 py-0.5 text-[11px] cursor-pointer ${
-                    selectedFilter === "NORMAL"
-                      ? "bg-[#2e7d32] text-white font-bold"
-                      : "text-[#555555] hover:bg-[#f2f2f2]"
-                  }`}
-                >
-                  In Spec ({items.length - breachedItems.length})
-                </button>
+        </section>)}
+        <section aria-label="BOM materials" className="border border-[#cccccc] bg-white shadow-xs">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#cccccc] bg-[#f2f2f2] px-4 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-[12px] font-bold">BOM Line Items:</h3>
+              <div className="flex flex-wrap border border-[#cccccc] bg-white text-[11px]">
+              {[
+                ["ALL", `All (${items.length})`], ["EXCEPTIONS", `Below Safety (${critical.length})`],
+                ["LINE_DOWN", `Line Down (${lineDown})`],
+                ["NORMAL", `In Spec (${items.length - critical.length})`],
+              ].map(([value, label]) => (
+                <button key={value} aria-pressed={filter === value} className={`px-2.5 py-1 ${filter === value ? "bg-[#0a6ed1] font-bold text-white" : "text-[#555555] hover:bg-[#e9e9e9]"}`}
+                  onClick={() => setFilter(value)}>{label}</button>
+              ))}
               </div>
             </div>
-
-            <div className="flex items-center gap-3">
-              {/* Quick Search */}
-              <div className="relative">
-                <input
-                  type="text"
-                  placeholder="Filter materials..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-7 pr-2 py-0.5 text-[11px] border border-[#cccccc] bg-white w-48 focus:outline-none focus:border-[#0a6ed1]"
-                />
-                <Search className="w-3.5 h-3.5 text-[#888888] absolute left-2 top-1.5" />
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="relative">
+                <span className="sr-only">Filter materials</span>
+                <Search className="pointer-events-none absolute left-2 top-1.5 size-3.5 text-[#888888]" />
+                <input className="w-48 border border-[#b8b8b8] bg-white py-1 pr-2 pl-7 text-[11px] outline-none focus:border-[#0a6ed1]"
+                  placeholder="Filter materials..." value={query} onChange={event => setQuery(event.target.value)} />
+              </label>
+              <div className="flex items-center gap-3 border-l border-[#cccccc] pl-3 text-[11px]">
+                <button aria-label="Export inventory CSV" title="Export filtered inventory to CSV" disabled={disabled}
+                  className="flex items-center gap-1 text-[#555555] hover:text-[#0a6ed1] disabled:opacity-40" onClick={() => {
+                    const rows = [["MPN", "Name", "Vendor", "On-hand EA", "Safety EA"], ...filtered.map(item =>
+                      [item.mpn, item.name, item.vendor, String(item.stock), String(item.safetyStock)])];
+                    const csv = rows.map(row => row.map(value => `"${value.replace(/"/g, '""')}"`).join(",")).join("\r\n");
+                    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+                    const link = document.createElement("a"); link.href = url; link.download = "demo-inventory.csv"; link.click();
+                    URL.revokeObjectURL(url);
+                  }}><Download className="size-3.5" /> Export</button>
+                <button className="flex items-center gap-1 text-[#555555] hover:text-[#0a6ed1]" onClick={() => window.print()}><Printer className="size-3.5" /> Print</button>
               </div>
-
-              <div className="h-4 w-[1px] bg-[#cccccc]" />
-
-              <button
-                className="flex items-center gap-1 text-[11px] text-[#555555] hover:text-[#000000] px-1 py-0.5 cursor-pointer"
-                title="Export Grid to CSV / XLSX"
-              >
-                <Download className="w-3 h-3" />
-                <span>Export</span>
-              </button>
-              <button
-                className="flex items-center gap-1 text-[11px] text-[#555555] hover:text-[#000000] px-1 py-0.5 cursor-pointer"
-                title="Print Form"
-              >
-                <Printer className="w-3 h-3" />
-                <span>Print</span>
-              </button>
             </div>
           </div>
-
-          {/* DENSE DATA TABLE */}
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-[11px] border-collapse" style={{ fontVariantNumeric: "tabular-nums" }}>
-              <thead>
-                <tr className="bg-[#e9e9e9] text-[#444444] border-b border-[#cccccc] uppercase font-bold text-[10px] tracking-wider select-none">
-                  <th className="py-2.5 px-3 border-r border-[#cccccc]">Layer</th>
-                  <th className="py-2.5 px-3 border-r border-[#cccccc]">Material Number</th>
-                  <th className="py-2.5 px-3 border-r border-[#cccccc]">Description</th>
-                  <th className="py-2.5 px-3 border-r border-[#cccccc]">Vendor</th>
-                  <th className="py-2.5 px-3 border-r border-[#cccccc]">Storage Loc</th>
-                  <th className="py-2.5 px-3 border-r border-[#cccccc] text-right">
-                    Unrestricted Stock (Editable)
+            <table className="w-full border-collapse text-left text-[11px]" style={{ fontVariantNumeric: "tabular-nums" }}>
+              <caption className="sr-only">Demo BOM inventory and separate research status</caption>
+              <thead><tr className="border-b border-[#cccccc] bg-[#e9e9e9] text-[10px] uppercase tracking-wide text-[#444444]">
+                {["Layer", "Material Number", "Description", "Vendor", "Storage Loc", "Unrestricted Stock (Editable)", "Safety Stock", "Lead Time", "Inventory Status", "Research Status", "Actions"].map(label =>
+                <th key={label} scope="col" className="whitespace-nowrap border-r border-[#cccccc] px-3 py-2.5 last:border-r-0">{label}</th>)}</tr></thead>
+              <tbody>{filtered.map(item => (
+                <tr key={item.id} className={`border-b border-[#dddddd] [&>td]:border-r [&>td]:border-[#e5e5e5] [&>td]:px-3 [&>td]:py-2 ${selectedPartId === item.id ? "bg-[#e5f0fa]" : item.stock < item.safetyStock ? "bg-[#fff5f5]" : "even:bg-[#fafafa] hover:bg-[#edf5fc]"}`}>
+                  <td className="text-center font-mono text-[#777777]">L{String(item.layerIndex).padStart(2, "0")}</td>
+                  <th scope="row" className="whitespace-nowrap border-r border-[#e5e5e5] px-3 py-2 text-left font-mono font-semibold text-[#0a6ed1]">
+                    <button onClick={() => setSelectedPartId(item.id)} title={`Review ${item.mpn}`} className="text-left hover:underline">
+                      {item.materialNumber}
+                      {item.materialNumber !== item.mpn && <span className="block text-[10px] font-normal text-[#666666]">{item.mpn}</span>}
+                    </button>
                   </th>
-                  <th className="py-2.5 px-3 border-r border-[#cccccc] text-right">Safety Stock</th>
-                  <th className="py-2.5 px-3 border-r border-[#cccccc]">Lead Time</th>
-                  <th className="py-2.5 px-3 text-center">Status</th>
-                  <th className="py-2.5 px-3 text-center">Simulate</th>
+                  <td className="min-w-40">{item.name}</td>
+                  <td className="min-w-32 text-[#555555]">{item.vendor}</td>
+                  <td className="whitespace-nowrap font-mono text-[#555555]">{item.storageLocation}</td>
+                  <td><StockEditor key={`${item.id}-${item.revision}`} item={item} disabled={disabled} /></td>
+                  <td className="whitespace-nowrap text-right font-mono">{item.safetyStock.toLocaleString()} <span className="text-[#888888]">EA</span></td>
+                  <td className="whitespace-nowrap text-[#555555]">{item.leadTime}</td>
+                  <td className="whitespace-nowrap">
+                    <span className={`inline-flex items-center gap-1.5 text-[10px] font-bold ${item.stock < item.safetyStock ? "text-[#bb0000]" : "text-[#107e3e]"}`}>
+                      <span className={`size-1.5 rounded-full ${item.stock < item.safetyStock ? "bg-[#bb0000]" : "bg-[#107e3e]"}`} />
+                      {item.stock === 0 ? "LINE DOWN" : item.stock < item.safetyStock ? "BELOW SAFETY STOCK" : "IN SPEC"}
+                    </span>
+                  </td>
+                  <td className="min-w-32 text-[10px] text-[#555555]">{item.isProcessing ? "RESEARCH RUNNING" : item.researchError ? "REQUEST FAILED - RETRY"
+                    : item.aiVerdict || item.workflow?.stage === "completed" ? "RESEARCH RECORDED - NOT APPROVED" : "NOT REQUESTED"}</td>
+                  <td>
+                    <div className="flex flex-wrap gap-1">
+                      <a href="#component-research" aria-label={`Review ${item.mpn}`} className="border border-[#b8b8b8] bg-white px-2 py-1 text-[#0a6ed1] hover:bg-[#eaf3fc]"
+                        onClick={() => setSelectedPartId(item.id)}>Review</a>
+                      <button disabled={disabled} className="border border-[#cccccc] bg-white px-2 py-1 text-[#bb0000] hover:bg-[#fff1f1] disabled:opacity-40"
+                        title={`Set ${item.mpn} to zero stock`} onClick={() => void updateStock(item.id, 0)}>Zero</button>
+                    </div>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {filteredItems.map((item, idx) => {
-                  const isZero = item.stock === 0;
-                  const isBreached = item.stock <= item.safetyStock;
-
-                  return (
-                    <tr
-                      key={item.id}
-                      className={`border-b border-[#e5e5e5] transition-colors ${
-                        isZero
-                          ? "bg-[#ffebee] hover:bg-[#ffcdd2]/60 font-medium"
-                          : isBreached
-                          ? "bg-[#fff8e1] hover:bg-[#ffe082]/50 font-medium"
-                          : idx % 2 === 1
-                          ? "bg-[#fafafa] hover:bg-[#f0f0f0]"
-                          : "bg-white hover:bg-[#f0f0f0]"
-                      }`}
-                    >
-                      {/* Layer */}
-                      <td className="py-2 px-3 border-r border-[#e0e0e0] font-mono text-[#666666] text-center">
-                        {String(item.layerIndex).padStart(2, "0")}
-                      </td>
-
-                      {/* Material Number */}
-                      <td className="py-2 px-3 border-r border-[#e0e0e0] font-mono text-[#111111] font-semibold whitespace-nowrap">
-                        {item.mpn}
-                      </td>
-
-                      {/* Description */}
-                      <td className="py-2 px-3 border-r border-[#e0e0e0] text-[#222222]">
-                        <span className="font-semibold">{item.name}</span>
-                        <div className="text-[10px] text-[#666666] line-clamp-1">{item.description}</div>
-                      </td>
-
-                      {/* Vendor */}
-                      <td className="py-2 px-3 border-r border-[#e0e0e0] text-[#555555] whitespace-nowrap">
-                        {item.vendor}
-                      </td>
-
-                      {/* Storage Location */}
-                      <td className="py-2 px-3 border-r border-[#e0e0e0] font-mono text-[#555555] whitespace-nowrap">
-                        {item.storageLocation}
-                      </td>
-
-                      {/* Unrestricted Stock (Interactive Editable Input) */}
-                      <td className="py-2 px-3 border-r border-[#e0e0e0] text-right font-mono whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1 justify-end">
-                          <input
-                            type="number"
-                            min="0"
-                            step="500"
-                            value={item.stock}
-                            onChange={(e) => updateStock(item.id, Number(e.target.value))}
-                            className={`w-24 px-1.5 py-0.5 text-right font-mono font-bold text-[12px] border ${
-                              isZero
-                                ? "bg-white border-[#d32f2f] text-[#c62828]"
-                                : isBreached
-                                ? "bg-white border-[#f57c00] text-[#e65100]"
-                                : "bg-white border-[#cccccc] text-[#222222]"
-                            } focus:outline-none focus:border-[#0a6ed1]`}
-                          />
-                          <span className="text-[10px] text-[#777777]">EA</span>
-                        </div>
-                      </td>
-
-                      {/* Safety Stock */}
-                      <td className="py-2 px-3 border-r border-[#e0e0e0] text-right font-mono text-[#666666] whitespace-nowrap">
-                        {item.safetyStock.toLocaleString()} EA
-                      </td>
-
-                      {/* Lead Time */}
-                      <td
-                        className={`py-2 px-3 border-r border-[#e0e0e0] whitespace-nowrap ${
-                          isBreached ? "text-[#c62828] font-bold" : "text-[#444444]"
-                        }`}
-                      >
-                        {item.leadTime}
-                      </td>
-
-                      {/* Status */}
-                      <td className="py-2 px-3 text-center whitespace-nowrap">
-                        {item.isResolved && item.aiVerdict ? (
-                          item.aiVerdict.workflow_route === "OEM_CUSTOM_ESCALATION" ? (
-                            <span className="inline-block px-2 py-0.5 bg-orange-100 text-orange-800 border border-orange-300 text-[9px] font-bold uppercase tracking-wider rounded-none">
-                              OEM ESCALATED
-                            </span>
-                          ) : item.aiVerdict.workflow_route === "EXACT_ORIGINAL_UNAVAILABLE" ? (
-                            <span className="inline-block px-2 py-0.5 bg-red-100 text-red-800 border border-red-300 text-[9px] font-bold uppercase tracking-wider rounded-none">
-                              EXACT MATCH UNAVAILABLE
-                            </span>
-                          ) : (
-                            <span className="inline-block px-2 py-0.5 bg-[#e8f5e9] text-[#2e7d32] border border-[#a5d6a7] text-[9px] font-bold uppercase tracking-wider rounded-none shadow-2xs">
-                              RESOLVED • EDI WRITTEN
-                            </span>
-                          )
-                        ) : isZero ? (
-                          <span className="inline-block px-2 py-0.5 bg-[#d32f2f] text-white text-[9px] font-bold uppercase tracking-wider rounded-none shadow-2xs">
-                            LINE DOWN EXCEPTION
-                          </span>
-                        ) : isBreached ? (
-                          <span className="inline-block px-2 py-0.5 bg-[#f57c00] text-white text-[9px] font-bold uppercase tracking-wider rounded-none">
-                            BELOW SAFETY STOCK
-                          </span>
-                        ) : (
-                          <span className="inline-block px-2 py-0.5 bg-[#e8f5e9] text-[#2e7d32] border border-[#c8e6c9] text-[9px] font-bold uppercase tracking-wider rounded-none">
-                            IN SPEC
-                          </span>
-                        )}
-                      </td>
-
-                      {/* Quick Simulate Buttons */}
-                      <td className="py-1 px-2 text-center whitespace-nowrap">
-                        <div className="flex items-center justify-center gap-1">
-                          <button
-                            onClick={() => updateStock(item.id, Math.floor(item.safetyStock * 0.5))}
-                            className="px-1.5 py-0.5 bg-white border border-[#cccccc] hover:bg-[#fff3e0] text-[10px] text-[#c62828] font-semibold cursor-pointer"
-                            title="Drop to 50% safety stock"
-                          >
-                            -50%
-                          </button>
-                          <button
-                            onClick={() => updateStock(item.id, 0)}
-                            className="px-1.5 py-0.5 bg-white border border-[#cccccc] hover:bg-[#ffebee] text-[10px] text-[#b71c1c] font-bold cursor-pointer"
-                            title="Set to 0 (Line Down)"
-                          >
-                            Zero
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
+              ))}{filtered.length === 0 && <tr><td colSpan={11} className="p-8 text-center text-[#666666]">No materials match the current filters.</td></tr>}</tbody>
             </table>
           </div>
-
-          {/* Table Footer Status Information */}
-          <div className="px-4 py-2 bg-[#f9f9f9] border-t border-[#cccccc] flex items-center justify-between text-[10px] text-[#777777]">
-            <div className="flex items-center gap-3">
-              <span>Showing {filteredItems.length} of {items.length} BOM components</span>
-              <span>•</span>
-              <span>
-                Critical Exceptions: <strong className="text-[#c62828]">{breachedItems.length}</strong>
-              </span>
-              <span>•</span>
-              <span>Storage System: High-Bay Automated Warehouse (AS/RS Plant HYD-01)</span>
-            </div>
-            <div>
-              <span>SAP GUI Version: 8.00 Patchlevel 4 | Kernel 7.93</span>
-            </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#cccccc] bg-[#f9f9f9] px-4 py-2 text-[10px] text-[#666666]">
+            <p>Showing {filtered.length} of {items.length} BOM components. Research never clears a stock exception.</p>
+            <span className="flex items-center gap-1"><Building2 className="size-3" /> Plant HYD-01 / Stock unit: EA</span>
           </div>
         </section>
-
-        {/* =======================================================================
-            FOOTER CALLOUT TO 3D DIGITAL TWIN
-            ======================================================================= */}
-        <div className="bg-white border border-[#cccccc] p-3 flex items-center justify-between text-[11px] text-[#555555]">
-          <div className="flex items-center gap-2">
-            <Building2 className="w-4 h-4 text-[#0a6ed1]" />
-            <span>
-              Connected to <strong>DropIn.ai Digital Twin</strong>. Inventory modifications made in
-              this table instantly render in the 3D WebGL assembly via reactive Zustand state synchronization.
-            </span>
+        {active && <section id="component-research" aria-label="Component research workspace" className="scroll-mt-4 border border-[#cccccc] bg-white shadow-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#cccccc] bg-[#f2f2f2] px-4 py-2">
+            <h3 className="flex items-center gap-2 text-[12px] font-bold"><FileSearch className="size-4 text-[#0a6ed1]" /> Component Research &amp; Engineering Evidence</h3>
+            <span className="text-[10px] text-[#666666]">Human review required / no ERP writeback</span>
           </div>
-
-          <Link
-            href="/"
-            className="text-[#0a6ed1] font-bold hover:underline flex items-center gap-1"
-          >
-            <span>Switch to DropIn.ai 3D Twin</span>
-            <ArrowRight className="w-3 h-3" />
-          </Link>
-        </div>
-      </main>
-    </div>
+          <div className="[&>section]:rounded-none [&>section]:border-0 [&>section]:text-[12px] [&_button]:rounded-none">
+            <ResearchCard item={active} />
+          </div>
+        </section>}
+        <footer className="flex flex-wrap justify-between gap-2 text-[10px] text-[#777777]">
+          <span>DropIn.ai / SAP-inspired Materials Management / Demo environment</span>
+          <span>Inventory and research are separate records. No live SAP connection.</span>
+        </footer>
+      </div>
+    </main>
   );
 }

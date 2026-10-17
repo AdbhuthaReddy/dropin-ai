@@ -1,0 +1,11 @@
+.gcloudignore
+.git
+.git/**
+#!include:.gitignore
+**/node_modules/**
+**/.next/**
+**/.env*
+**/__pycache__/**
+backend/data/**
+backend/datasheets/**
+**/*.pdf

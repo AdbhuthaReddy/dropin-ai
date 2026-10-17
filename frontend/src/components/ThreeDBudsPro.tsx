@@ -1,25 +1,17 @@
 "use client";
 
-import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle, Suspense } from "react";
-import Link from "next/link";
+import React, { useState, useRef, Suspense } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Environment, Lightformer, ContactShadows, Html, Line } from "@react-three/drei";
+import { OrbitControls, Environment, Lightformer, ContactShadows, Line } from "@react-three/drei";
 import * as THREE from "three";
 import {
-  Zap,
   RotateCcw,
   X,
-  Maximize2,
   AlertTriangle,
   Sparkles,
   Layers,
-  ChevronRight,
-  Info,
   CheckCircle2,
-  AlertOctagon,
-  ExternalLink,
-  ShieldAlert,
-  ArrowRight
+  AlertOctagon
 } from "lucide-react";
 import { useInventoryStore, InventoryItem } from "@/store/useInventoryStore";
 
@@ -39,14 +31,12 @@ interface MotionProps {
     mass?: number;
   };
   children?: React.ReactNode;
-  [key: string]: any;
 }
 
-const MotionGroup = forwardRef<THREE.Group, MotionProps>(({ animate, transition, children, ...props }, ref) => {
+function MotionGroup({ animate, transition, children }: MotionProps) {
   const groupRef = useRef<THREE.Group>(null);
-  useImperativeHandle(ref, () => groupRef.current!);
 
-  const targetPos = (animate?.position as [number, number, number]) || [0, 0, 0];
+  const targetPos = animate?.position || [0, 0, 0];
   const stiffness = transition?.stiffness ?? 65;
   const damping = transition?.damping ?? 16;
   const mass = transition?.mass ?? 1;
@@ -68,12 +58,11 @@ const MotionGroup = forwardRef<THREE.Group, MotionProps>(({ animate, transition,
   });
 
   return (
-    <group ref={groupRef} {...props}>
+    <group ref={groupRef}>
       {children}
     </group>
   );
-});
-MotionGroup.displayName = "MotionGroup";
+}
 
 // ============================================================================
 // INDIVIDUAL DYNAMIC BOM COMPONENT MESH
@@ -84,9 +73,7 @@ interface BOMPartMeshProps {
   isExploded: boolean;
   explodedX: number;
   compactX: number;
-  isSelected: boolean;
   onSelect: (id: string | null) => void;
-  onActionClick?: (mpn: string) => void;
 }
 
 const BOMPartMesh = React.memo(function BOMPartMesh({
@@ -94,15 +81,11 @@ const BOMPartMesh = React.memo(function BOMPartMesh({
   isExploded,
   explodedX,
   compactX,
-  isSelected,
-  onSelect,
-  onActionClick
+  onSelect
 }: BOMPartMeshProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const pointLightRef = useRef<THREE.PointLight>(null);
-  const materialNumber = item.materialNumber || item.mpn;
-  item.materialNumber = materialNumber;
-  const isCritical = item.stock <= item.safetyStock;
+  const isCritical = item.stock < item.safetyStock;
 
   // Pulsing emissive warning beacon for any component breaching safety threshold
   useFrame((state) => {
@@ -128,7 +111,6 @@ const BOMPartMesh = React.memo(function BOMPartMesh({
   });
 
   const posX = isExploded ? explodedX : compactX;
-  const showAnnotation = isSelected;
 
   // Render specific geometric primitive based on meshType
   const renderGeometry = () => {
@@ -220,7 +202,7 @@ const BOMPartMesh = React.memo(function BOMPartMesh({
           </group>
         );
 
-      case "chip": // 5. NXP BQ25611 PMIC
+      case "chip":
         return (
           <group
             onClick={(e) => {
@@ -369,83 +351,6 @@ const BOMPartMesh = React.memo(function BOMPartMesh({
           decay={2}
         />
       )}
-
-      {/* DREI HTML ANNOTATION CARD */}
-      <Html
-        position={[0, 1.4 + (item.layerIndex % 2 === 0 ? 0.3 : 0), 0]}
-        center
-        distanceFactor={11}
-        zIndexRange={[100, 0]}
-        style={{ pointerEvents: showAnnotation ? "auto" : "none" }}>
-        <div
-          key={'card-' + item.layerIndex}
-          onClick={(e) => e.stopPropagation()}
-          className={`${showAnnotation ? "block" : "hidden"} w-[170px] p-2 rounded-xl border bg-white/90 backdrop-blur-md shadow-md transition-all select-none font-sans text-left ${
-            isCritical
-              ? "border-red-200/50 shadow-red-500/10 ring-1 ring-red-400/40"
-              : "border-neutral-200/60 shadow-neutral-500/5"
-          }`}>
-          <div className="flex items-center justify-between pb-1 mb-1 border-b border-neutral-100">
-            <span className="text-[9px] font-mono font-semibold text-neutral-500 truncate mr-1">
-              {"L" + String(item.layerIndex).padStart(2, "0") + " • " + (item.materialNumber || item.mpn)}
-            </span>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect(null);
-              }}
-              className="text-neutral-400 hover:text-neutral-700 p-0.5 cursor-pointer shrink-0"
-            >
-              <X className="w-2.5 h-2.5" />
-            </button>
-          </div>
-
-          <div className="text-xs font-bold text-neutral-900 leading-tight truncate">
-            {item.name}
-          </div>
-
-          {/* Critical Alert Warning Badge */}
-          {isCritical ? (
-            <div className="mt-1.5 space-y-1">
-              <div className="flex items-center gap-1 text-red-700 text-[8px] font-bold uppercase tracking-wider px-1 py-0.5 bg-red-50 border border-red-200/60 rounded">
-                <AlertOctagon className="w-2.5 h-2.5 text-red-600 shrink-0" />
-                <span className="truncate">
-                  {item.stock === 0 ? "0 STOCK • LINE DOWN" : "BELOW SAFETY STOCK"}
-                </span>
-              </div>
-
-              <div className="text-[9px] text-neutral-600 leading-tight space-y-0.5">
-                <div className="truncate">Stock: {item.stock.toLocaleString()} EA • Safety: {item.safetyStock.toLocaleString()} EA</div>
-                <div className="text-neutral-500">LT: {item.leadTime}</div>
-              </div>
-
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (onActionClick) onActionClick(item.mpn);
-                }}
-                className="mt-1.5 w-full py-1 px-2 bg-red-600 hover:bg-red-700 text-white font-semibold text-[9px] tracking-wide rounded flex items-center justify-center gap-1 shadow-xs cursor-pointer transition-colors"
-              >
-                <Sparkles className="w-2.5 h-2.5" />
-                <span>Evaluate Replacement</span>
-              </button>
-            </div>
-          ) : (
-            <div className="mt-1.5 p-1 bg-emerald-50/80 border border-emerald-200/50 rounded">
-              <div className="flex items-center justify-between text-emerald-800 text-[9px] font-semibold">
-                <span className="flex items-center gap-1">
-                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
-                  <span>In Spec</span>
-                </span>
-                <span className="font-mono">{item.stock.toLocaleString()} EA</span>
-              </div>
-              <div className="text-[8px] text-neutral-500 mt-0.5 truncate">
-                Vendor: {item.vendor}
-              </div>
-            </div>
-          )}
-        </div>
-      </Html>
     </MotionGroup>
   );
 });
@@ -455,12 +360,14 @@ const BOMPartMesh = React.memo(function BOMPartMesh({
 // ============================================================================
 function BudsScene({
   isExploded,
-  onActionClick
+  tooltipRef
 }: {
   isExploded: boolean;
-  onActionClick?: (mpn: string) => void;
+  tooltipRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const { items, selectedPartId, setSelectedPartId } = useInventoryStore();
+  const tooltipAnchorRef = useRef<THREE.Group>(null);
+  const tooltipPosition = useRef(new THREE.Vector3());
 
   // Horizontal coordinates for 10 meshes spread along the X-axis
   // Ordered from outer cap to ear canal
@@ -476,6 +383,29 @@ function BudsScene({
     "transducer": { exploded: -3.1, compact: -0.65 },
     "eartip": { exploded: -4.4, compact: -1.05 }
   };
+
+  const selectedPart = items.find((i) => i.id === selectedPartId);
+  const displayPart = selectedPart || items[0];
+  const selectedCoords = displayPart ? (xPositions[displayPart.id] || { exploded: 0, compact: 0 }) : { exploded: 0, compact: 0 };
+  const selectedPosX = isExploded ? selectedCoords.exploded : selectedCoords.compact;
+
+  // Project into the page-owned DOM overlay instead of creating a nested React root.
+  useFrame(({ camera, size }) => {
+    const tooltip = tooltipRef.current;
+    const anchor = tooltipAnchorRef.current;
+    if (!tooltip || !anchor) return;
+
+    camera.updateMatrixWorld();
+    anchor.getWorldPosition(tooltipPosition.current);
+    const distance = tooltipPosition.current.distanceTo(camera.position);
+    tooltipPosition.current.project(camera);
+    const { x, y, z } = tooltipPosition.current;
+    tooltip.style.visibility = selectedPart && z >= -1 && z <= 1 ? "visible" : "hidden";
+    const scale = camera instanceof THREE.PerspectiveCamera
+      ? 11 / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * distance)
+      : 1;
+    tooltip.style.transform = `translate3d(${(x + 1) * size.width / 2}px,${(1 - y) * size.height / 2}px,0) scale(${scale})`;
+  });
 
   return (
     <group dispose={null} position={[0, 0, 0]}>
@@ -498,22 +428,101 @@ function BudsScene({
       )}
 
       {/* Render all 10 BOM meshes with dynamic Zustand bindings */}
-      {items.map((item, index) => {
+      {items.map((item) => {
         const coords = xPositions[item.id] || { exploded: 0, compact: 0 };
         return (
           <BOMPartMesh
-            key={`mesh-slot-${index}`}
+            key={item.id}
             item={item}
             isExploded={isExploded}
             explodedX={coords.exploded}
             compactX={coords.compact}
-            isSelected={selectedPartId === item.id}
             onSelect={(id) => setSelectedPartId(id === selectedPartId || !id ? null : id)}
-            onActionClick={onActionClick}
           />
         );
       })}
+
+      <group
+        ref={tooltipAnchorRef}
+        position={[
+          selectedPosX,
+          displayPart ? 1.4 + (displayPart.layerIndex % 2 === 0 ? 0.3 : 0) : 0,
+          0
+        ]}
+      />
     </group>
+  );
+}
+
+function PartTooltip({ onActionClick }: { onActionClick?: () => void }) {
+  const { items, selectedPartId, setSelectedPartId } = useInventoryStore();
+  const displayPart = items.find((item) => item.id === selectedPartId);
+  if (!displayPart) return null;
+  const isCrit = displayPart.stock < displayPart.safetyStock;
+
+  return (
+    <div
+      onClick={(e) => e.stopPropagation()}
+      className={`w-[170px] -translate-x-1/2 -translate-y-1/2 p-2 rounded-xl border bg-white/90 backdrop-blur-md shadow-md transition-all select-none font-sans text-left pointer-events-auto
+        ${isCrit ? "border-red-200/50 shadow-red-500/10 ring-1 ring-red-400/40" : "border-neutral-200/60 shadow-neutral-500/5"}
+      `}
+    >
+      <div className="flex items-center justify-between pb-1 mb-1 border-b border-neutral-100">
+        <span className="text-[9px] font-mono font-semibold text-neutral-500 truncate mr-1">
+          {"L" + String(displayPart.layerIndex).padStart(2, "0") + " • " + (displayPart.materialNumber || displayPart.mpn)}
+        </span>
+        <button
+          aria-label="Close part details"
+          onClick={(e) => {
+            e.stopPropagation();
+            setSelectedPartId(null);
+          }}
+          className="text-neutral-400 hover:text-neutral-700 p-0.5 cursor-pointer shrink-0"
+        >
+          <X className="w-2.5 h-2.5" />
+        </button>
+      </div>
+
+      <div className="text-xs font-bold text-neutral-900 leading-tight truncate">
+        {displayPart.name}
+      </div>
+
+      <div className={isCrit ? "block mt-1.5 space-y-1" : "hidden"}>
+        <div className="flex items-center gap-1 text-red-700 text-[8px] font-bold uppercase tracking-wider px-1 py-0.5 bg-red-50 border border-red-200/60 rounded">
+          <AlertOctagon className="w-2.5 h-2.5 text-red-600 shrink-0" />
+          <span className="truncate">
+            {displayPart.stock === 0 ? "0 STOCK • LINE DOWN" : "BELOW SAFETY STOCK"}
+          </span>
+        </div>
+        <div className="text-[9px] text-neutral-600 leading-tight space-y-0.5">
+          <div className="truncate">Stock: {displayPart.stock.toLocaleString()} EA • Safety: {displayPart.safetyStock.toLocaleString()} EA</div>
+          <div className="text-neutral-500">LT: {displayPart.leadTime}</div>
+        </div>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onActionClick?.();
+          }}
+          className="mt-1.5 w-full py-1 px-2 bg-red-600 hover:bg-red-700 text-white font-semibold text-[9px] tracking-wide rounded flex items-center justify-center gap-1 shadow-xs cursor-pointer transition-colors"
+        >
+          <Sparkles className="w-2.5 h-2.5" />
+          <span>Evaluate Replacement</span>
+        </button>
+      </div>
+
+      <div className={!isCrit ? "block mt-1.5 p-1 bg-emerald-50/80 border border-emerald-200/50 rounded" : "hidden"}>
+        <div className="flex items-center justify-between text-emerald-800 text-[9px] font-semibold">
+          <span className="flex items-center gap-1">
+            <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+            <span>In Spec</span>
+          </span>
+          <span className="font-mono">{displayPart.stock.toLocaleString()} EA</span>
+        </div>
+        <div className="text-[8px] text-neutral-500 mt-0.5 truncate">
+          Vendor: {displayPart.vendor}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -528,12 +537,13 @@ export default function ThreeDBudsPro({
   className?: string;
 }) {
   const [isExploded, setIsExploded] = useState(true);
-  const orbitRef = useRef<any>(null);
+  const orbitRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
 
-  const { items, selectedPartId, setSelectedPartId, simulateShortage, resetAll } =
+  const { items, selectedPartId, setSelectedPartId, simulateShortage, resetAll, loaded, syncError, writing } =
     useInventoryStore();
 
-  const criticalCount = items.filter((i) => i.stock <= i.safetyStock).length;
+  const criticalCount = items.filter((i) => i.stock < i.safetyStock).length;
 
   const handleResetCamera = () => {
     if (orbitRef.current) {
@@ -545,7 +555,7 @@ export default function ThreeDBudsPro({
     <div className={`w-full h-full relative overflow-hidden bg-[#f8f9fa] select-none ${className}`}>
       {/* WebGL 3D Canvas */}
       <Canvas
-        shadows
+        shadows="percentage"
         camera={{ position: [0, 3.2, 10], fov: 36 }}
         className="w-full h-full cursor-grab active:cursor-grabbing"
       >
@@ -574,9 +584,7 @@ export default function ThreeDBudsPro({
 
           <BudsScene
             isExploded={isExploded}
-            onActionClick={(mpn) => {
-              if (onPmicClick) onPmicClick();
-            }}
+            tooltipRef={tooltipRef}
           />
 
           <ContactShadows
@@ -599,8 +607,17 @@ export default function ThreeDBudsPro({
         </Suspense>
       </Canvas>
 
+      <div
+        ref={tooltipRef}
+        data-part-tooltip
+        className="absolute top-0 left-0 z-10 pointer-events-none origin-top-left"
+        style={{ visibility: "hidden" }}
+      >
+        <PartTooltip onActionClick={onPmicClick} />
+      </div>
+
       {/* TOP FLOATING OVERLAY: Title, Critical Badges & ERP Link */}
-      <div className="absolute top-4 left-6 flex items-center gap-3 z-10 pointer-events-auto">
+      <div className="absolute top-4 left-3 hidden sm:flex items-center gap-3 z-10 pointer-events-auto">
         <div className="px-3.5 py-2 rounded-xl bg-white/90 backdrop-blur-md border border-neutral-200/90 shadow-sm flex items-center gap-2">
           <div className="w-2.5 h-2.5 rounded-full bg-[#1a73e8]" />
           <div>
@@ -618,13 +635,13 @@ export default function ThreeDBudsPro({
         ) : (
           <div className="px-3 py-1.5 rounded-xl bg-emerald-50/95 backdrop-blur-md border border-emerald-200 text-emerald-700 text-xs font-semibold flex items-center gap-1.5 shadow-sm">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-            <span>All 10 BOM Parts In Spec</span>
+            <span>{!loaded ? "Loading shared inventory" : syncError ? "Inventory sync unavailable" : "All 10 BOM Parts In Spec"}</span>
           </div>
         )}
       </div>
 
       {/* TOP RIGHT CONTROLS: Exploded Toggle & Reset View */}
-      <div className="absolute top-4 right-6 flex items-center gap-2 z-10 pointer-events-auto">
+      <div className="absolute top-4 right-3 flex items-center gap-2 z-10 pointer-events-auto">
         <button
           onClick={() => setIsExploded(!isExploded)}
           className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all shadow-sm border cursor-pointer ${
@@ -649,37 +666,42 @@ export default function ThreeDBudsPro({
       {/* BOTTOM 10-PART SELECTOR & QUICK TEST CONTROLS */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 z-10 pointer-events-auto max-w-[94%]">
         {/* Quick Testing Bar */}
-        <div className="flex items-center gap-2 bg-white/95 backdrop-blur-md border border-neutral-200/90 rounded-2xl px-3 py-1.5 shadow-md text-xs">
+        <div className="flex flex-wrap justify-center items-center gap-2 bg-white/95 backdrop-blur-md border border-neutral-200/90 rounded-2xl px-3 py-1.5 shadow-md text-xs">
           <span className="text-[11px] text-neutral-500 font-semibold uppercase tracking-wider pl-1">
             Simulate Shortage:
           </span>
           <button
-            onClick={() => simulateShortage("pmic")}
+            disabled={!loaded || !!syncError || writing}
+            onClick={() => void simulateShortage("pmic")}
             className="px-2.5 py-1 rounded-lg bg-neutral-100 hover:bg-red-50 hover:text-red-700 text-neutral-700 text-[11px] font-medium transition-colors cursor-pointer"
           >
-            NXP PMIC
+            PMIC
           </button>
           <button
-            onClick={() => simulateShortage("battery")}
+            disabled={!loaded || !!syncError || writing}
+            onClick={() => void simulateShortage("battery")}
             className="px-2.5 py-1 rounded-lg bg-neutral-100 hover:bg-red-50 hover:text-red-700 text-neutral-700 text-[11px] font-medium transition-colors cursor-pointer"
           >
             Li-Ion Battery
           </button>
           <button
-            onClick={() => simulateShortage("tensor-a1")}
+            disabled={!loaded || !!syncError || writing}
+            onClick={() => void simulateShortage("tensor-a1")}
             className="px-2.5 py-1 rounded-lg bg-neutral-100 hover:bg-red-50 hover:text-red-700 text-neutral-700 text-[11px] font-medium transition-colors cursor-pointer"
           >
             Tensor A1 DSP
           </button>
           <button
-            onClick={() => simulateShortage("outer-shell")}
+            disabled={!loaded || !!syncError || writing}
+            onClick={() => void simulateShortage("outer-shell")}
             className="px-2.5 py-1 rounded-lg bg-neutral-100 hover:bg-red-50 hover:text-red-700 text-neutral-700 text-[11px] font-medium transition-colors cursor-pointer"
           >
             Outer Shell
           </button>
           <div className="h-3 w-[1px] bg-neutral-300 mx-1" />
           <button
-            onClick={resetAll}
+            disabled={!loaded || !!syncError || writing}
+            onClick={() => void resetAll()}
             className="px-2.5 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-600 text-[11px] font-medium transition-colors cursor-pointer"
           >
             Reset All
@@ -689,7 +711,7 @@ export default function ThreeDBudsPro({
         {/* 10-Component Pill Navigator */}
         <div className="flex items-center gap-1.5 overflow-x-auto max-w-full px-2 py-1 scrollbar-none">
           {items.map((part) => {
-            const isCrit = part.stock <= part.safetyStock;
+            const isCrit = part.stock < part.safetyStock;
             const isSel = selectedPartId === part.id;
             return (
               <button

@@ -11,6 +11,7 @@ __pycache__/
 *$py.class
 .pytest_cache/
 backend/datasheets/*.pdf
+backend/data/
 
 # Environments
 .env
