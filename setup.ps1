@@ -168,7 +168,7 @@ try {
 
     Write-Host "Verifying installed dependencies..."
     Invoke-Checked $venvPython @("-m", "pip", "check")
-    Invoke-Checked $venvPython @("-c", "import fastapi, uvicorn, pypdf, dotenv, google.genai, firebase_admin, google.cloud.firestore, google.cloud.tasks_v2, httpx")
+    Invoke-Checked $venvPython @("-c", "import fastapi, uvicorn, pypdf, dotenv, google.genai, google.cloud.firestore, httpx")
     Push-Location (Join-Path $root "frontend")
     try {
         Invoke-Checked $nodePath @((Join-Path $root "frontend\node_modules\next\dist\bin\next"), "typegen")

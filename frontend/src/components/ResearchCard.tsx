@@ -36,8 +36,9 @@ export default function ResearchCard({ item }: { item: InventoryItem }) {
           Research alternatives
         </button>
       </div>}
-      {busy && <p role="status">Research request running. Stage progress is not available; stock remains unchanged.</p>}
-      {item.researchError && <p role="alert" className="text-red-800">{item.researchError} Use either research button to retry.</p>}
+      {busy && !cloudEnabled && <p role="status">Research request running. Stage progress is not available; stock remains unchanged.</p>}
+      {item.researchError && <p role="alert" className="text-red-800">{item.researchError}{" "}
+        {cloudEnabled ? "Use the workflow button to retry." : "Use either research button to retry."}</p>}
       {result && (
         <div className="space-y-3 border-t pt-3">
           <p className="font-bold text-amber-900">

@@ -16,6 +16,9 @@ jobs:
       - name: Setup script regression tests
         shell: powershell
         run: .\tests\setup.Tests.ps1
+      - name: Single-service deployment script regression tests
+        shell: powershell
+        run: .\tests\deploy.Tests.ps1
       - name: Fresh-clone installation
         shell: powershell
         run: .\setup.ps1 -SkipRuntimeInstall
@@ -50,7 +53,25 @@ jobs:
       - run: npm run build
         env:
           NEXT_PUBLIC_CLOUD_MODE: "true"
-          NEXT_PUBLIC_API_BASE_URL: "https://api.example.invalid"
-          NEXT_PUBLIC_FIREBASE_PROJECT_ID: "demo-dropin"
-          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: "demo-dropin.firebaseapp.com"
-          NEXT_PUBLIC_FIREBASE_API_KEY: "demo-build-not-a-secret"
+          NEXT_PUBLIC_API_BASE_URL: "/"
+  combined-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f deploy/Dockerfile -t dropin-demo:test .
+      - name: Verify proxy, web and API without cloud credentials or provider calls
+        run: |
+          docker run -d --name demo -e INVENTORY_DB_PATH=/tmp/inventory.sqlite3 -p 127.0.0.1:8080:8080 dropin-demo:test
+          trap 'docker logs demo; docker rm -f demo' EXIT
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/health; then break; fi
+            sleep 2
+          done
+          curl -fsS http://localhost:8080/health
+          curl -fsS http://localhost:8080/ready
+          curl -fsS http://localhost:8080/api/inventory
+          curl -fsS http://localhost:8080/erp-simulator > /tmp/demo-erp.html
+          curl -fsS http://localhost:8080/datasheets > /dev/null
+          asset=$(grep -oE '/_next/static/[^"]+\.css' /tmp/demo-erp.html | head -n 1)
+          test -n "$asset"
+          curl -fsS "http://localhost:8080$asset" > /dev/null

@@ -72,7 +72,9 @@ export default function WorkflowReport({ item }: { item: InventoryItem }) {
       alternative discovery, candidate datasheets and cited comparison. Results never change on-hand stock.</p>
     <p>Public datasheet text is sent to Gemini under the operator&apos;s deployment opt-in.
       No private upload is used automatically. Software, firmware and hardware changes remain subject to engineering review.</p>
-    <button disabled={busy || item.isProcessing} className="rounded bg-blue-800 p-2 text-white disabled:opacity-50" onClick={async () => {
+    <p>Keep this page open while research runs (up to six minutes). After an interrupted request,
+      use Resume once the eight-minute worker lease expires. Inventory and saved reports survive restarts.</p>
+    <button disabled={busy} className="rounded bg-blue-800 p-2 text-white disabled:opacity-50" onClick={async () => {
       setBusy(true); setError(null);
       try {
         await requestJson(`/api/inventory/${item.id}/workflow`, {
@@ -81,7 +83,9 @@ export default function WorkflowReport({ item }: { item: InventoryItem }) {
         await refresh();
       } catch (failure) { setError(failure instanceof Error ? failure.message : "Workflow could not be queued."); }
       finally { setBusy(false); }
-    }}>{item.isProcessing ? "Automatic research running" : "Run exact-to-alternative workflow"}</button>
+    }}>{busy ? "Research request running" : item.isProcessing
+        ? "Resume interrupted research"
+        : "Run exact-to-alternative workflow"}</button>
     {workflow && <p role="status">Research stage: {workflow.stage.replaceAll("_", " ")}</p>}
     {error && <p role="alert" className="text-red-800">{error}</p>}
     {report !== null && <details open={workflow?.stage === "completed"}>

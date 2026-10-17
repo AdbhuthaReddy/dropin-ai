@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, Validation
 from app.services.datasheets import MAX_PDF_BYTES, DocumentError, compare_documents, extract_pair
 from app.services.gemini_engine import AgentHardwareVerdict, ProviderUnavailable, evaluate_component_shortage, provider_configured
 from app.services.inventory import ConflictError, InventoryRepository
-from app.services.identity import cloud_mode, require_user, require_worker
+from app.services.identity import cloud_mode, require_user
 
 logger = logging.getLogger(__name__)
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
@@ -41,18 +41,17 @@ def provider_detail(exc: ProviderUnavailable, reference: str) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if os.getenv("STATE_BACKEND", "sqlite") not in ("sqlite", "firestore"):
+        raise RuntimeError("STATE_BACKEND must be sqlite (local) or firestore (cloud).")
     if os.getenv("K_SERVICE") and not cloud_mode():
         raise RuntimeError("Cloud Run requires STATE_BACKEND=firestore; ephemeral SQLite is forbidden.")
     if cloud_mode():
         from app.services.cloud_state import CloudRepository
-        from app.services.identity import firebase_app
-        for setting in ("GOOGLE_CLOUD_PROJECT", "WORKER_URL", "WORKER_AUDIENCE", "TASK_SERVICE_ACCOUNT", "TASK_REGION", "TASK_QUEUE"):
-            if not os.getenv(setting):
-                raise RuntimeError(f"Cloud configuration requires {setting}.")
+        if not os.getenv("GOOGLE_CLOUD_PROJECT") or len(os.getenv("DEMO_ACCESS_CODE", "")) < 24:
+            raise RuntimeError("Cloud deployment requires GOOGLE_CLOUD_PROJECT and a presenter passcode of at least 24 characters.")
         if os.getenv("AUTO_RESEARCH_ENABLED") == "true" and os.getenv("PUBLIC_DATASHEET_CONSENT") != "true":
             raise RuntimeError("Automatic public document research requires deployment-level consent.")
         app.state.inventory = CloudRepository()
-        firebase_app()
     else:
         app.state.inventory = InventoryRepository(Path(os.getenv(
             "INVENTORY_DB_PATH", str(Path(__file__).resolve().parents[1] / "data" / "inventory.sqlite3")
@@ -195,7 +194,7 @@ def repository(request: Request) -> InventoryRepository:
 
 
 async def cloud_change(request, operation, **kwargs):
-    from app.services.cloud_state import BudgetError, dispatch
+    from app.services.cloud_state import BudgetError
     actor = await asyncio.to_thread(require_user, request)
     repo = repository(request)
     try:
@@ -205,12 +204,7 @@ async def cloud_change(request, operation, **kwargs):
     except (ConflictError, KeyError) as exc:
         mutation_error(exc)
     if job_id:
-        try:
-            await asyncio.to_thread(dispatch, job_id)
-        except Exception:
-            # The queued outbox document remains durable; authenticated Scheduler retries dispatch.
-            logger.exception("request_id=%s job_id=%s dispatch failed; awaiting outbox recovery",
-                             request.state.request_id, job_id)
+        await run_job(job_id, request)
     return await asyncio.to_thread(repo.snapshot)
 
 
@@ -229,6 +223,12 @@ async def get_inventory(request: Request):
 async def public_configuration():
     return {"cloud_workflow": cloud_mode(),
             "automatic_research": cloud_mode() and os.getenv("AUTO_RESEARCH_ENABLED") == "true"}
+
+
+@app.post("/api/access")
+async def check_access(request: Request):
+    await asyncio.to_thread(require_user, request)
+    return {"authorized": True}
 
 
 @app.post("/api/inventory/reset")
@@ -258,7 +258,7 @@ async def update_stock(item_id: str, body: StockUpdate, request: Request):
 @app.post("/api/inventory/{item_id}/research")
 async def request_research(item_id: str, body: ResearchRequest, request: Request):
     if cloud_mode():
-        raise HTTPException(410, "Use the queued /workflow action for cloud research.")
+        raise HTTPException(410, "Use the /workflow action for cloud research.")
     repo = repository(request)
     try:
         started = repo.begin_research(item_id, body.request_id, body.search_mode, body.expected_revision)
@@ -348,9 +348,23 @@ async def ready():
 @app.post("/api/inventory/{item_id}/workflow")
 async def queue_workflow(item_id: str, body: WorkflowRequest, request: Request):
     if not cloud_mode():
-        raise HTTPException(409, "Durable automatic workflow requires the Firestore/Cloud Tasks deployment.")
+        raise HTTPException(409, "Automatic workflow requires a Firestore deployment. See DEPLOYMENT.md for the single-service demo.")
     if os.getenv("PUBLIC_DATASHEET_CONSENT") != "true":
         raise HTTPException(503, "Automatic public datasheet processing has not been enabled by the operator.")
+    repo = repository(request)
+    snapshot = await asyncio.to_thread(repo.snapshot)
+    item = next((entry for entry in snapshot["items"] if entry["id"] == item_id), None)
+    if item and item["isProcessing"]:
+        from app.services.cloud_state import BudgetError
+        try:
+            actor = await asyncio.to_thread(require_user, request)
+            token = await asyncio.to_thread(repo.resume, actor, item_id, body.expected_revision)
+        except BudgetError as exc:
+            raise HTTPException(429, str(exc)) from exc
+        except (ConflictError, KeyError) as exc:
+            mutation_error(exc)
+        await run_job(token, request)
+        return await asyncio.to_thread(repo.snapshot)
     return await cloud_change(request, "research", item_id=item_id, revision=body.expected_revision)
 
 
@@ -366,25 +380,12 @@ async def get_job(job_id: UUID, request: Request):
     return {key: job.get(key) for key in ("state", "stage", "created_at", "result", "error")}
 
 
-@app.post("/internal/dispatch")
-async def recover_jobs(request: Request):
-    await asyncio.to_thread(require_worker, request)
-    from app.services.cloud_state import dispatch
-    pending = await asyncio.to_thread(lambda: list(repository(request).pending_jobs()))
-    for job_id, attempt in pending:
-        await asyncio.to_thread(dispatch, job_id, attempt)
-    return {"dispatched": len(pending)}
-
-
-@app.post("/internal/jobs/{job_id}")
-async def process_job(job_id: UUID, request: Request):
-    await asyncio.to_thread(require_worker, request)
+async def run_job(token: str, request: Request):
     if os.getenv("PUBLIC_DATASHEET_CONSENT") != "true":
         raise HTTPException(503, "Public document processing is not enabled.")
     from app.services.workflow import run_workflow
     from app.services.public_sources import SourceError
     repo = repository(request)
-    token = job_id.hex
     try:
         job = await asyncio.to_thread(repo.transition, token, "starting", claim=True)
     except ConflictError as exc:
@@ -405,7 +406,7 @@ async def process_job(job_id: UUID, request: Request):
     except ObsoleteWorkflow:
         return {"state": "cancelled"}
     except asyncio.CancelledError:
-        # A task killed by Cloud Run is recovered after its lease expires.
+        # A presenter can explicitly resume interrupted work after the lease expires.
         raise
     except ProviderUnavailable as exc:
         await asyncio.to_thread(repo.transition, token, "failed",

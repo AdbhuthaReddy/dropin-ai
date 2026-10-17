@@ -8,8 +8,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from google.api_core.exceptions import AlreadyExists
-from google.cloud import firestore, tasks_v2
-from google.protobuf.duration_pb2 import Duration
+from google.cloud import firestore
 
 from app.services.inventory import BOM_PATH, ConflictError
 
@@ -54,7 +53,7 @@ class CloudRepository:
             self._cache = None
 
     def recover_interrupted(self):
-        # Cloud Tasks delivery and expiring worker leases own recovery, not API cold starts.
+        # A presenter resumes expired leases; cold starts must not cancel active requests.
         return None
 
     def _budget(self, tx, actor: str, research: bool):
@@ -127,6 +126,30 @@ class CloudRepository:
                 tx.set(ref, values)
         commit(self.db.transaction())
 
+    def resume(self, actor: str, item_id: str, revision: int):
+        """Explicitly recover an interrupted inline request, without a scheduler."""
+        @firestore.transactional
+        def commit(tx):
+            state = self.state.get(transaction=tx).to_dict()
+            item = next((entry for entry in state["items"] if entry["id"] == item_id), None)
+            if item is None:
+                raise KeyError(item_id)
+            if item["revision"] != revision:
+                raise ConflictError("Inventory changed. Refresh and review before retrying.")
+            workflow = item.get("workflow")
+            if not item["isProcessing"] or not workflow:
+                raise ConflictError("No interrupted research to resume.")
+            job = self.jobs.document(workflow["job_id"]).get(transaction=tx).to_dict()
+            if not job or job["state"] not in ("queued", "running"):
+                raise ConflictError("Research is no longer resumable. Refresh the inventory.")
+            if job["lease_until"] > time.time():
+                raise ConflictError("Research is still running or recovering. Resume after the eight-minute lease expires.")
+            updates = self._budget(tx, actor, False)
+            for ref, values in updates:
+                tx.set(ref, values)
+            return workflow["job_id"]
+        return commit(self.db.transaction())
+
     def job(self, job_id: str):
         data = self.jobs.document(job_id).get().to_dict()
         if data is None:
@@ -170,36 +193,3 @@ class CloudRepository:
         result = commit(self.db.transaction())
         self.invalidate()
         return result
-
-    def pending_jobs(self):
-        now = time.time()
-        # Bounded scan suitable for the hackathon budget, no composite index needed.
-        for status in ("queued", "running"):
-            for doc in self.jobs.where(filter=firestore.FieldFilter("state", "==", status)).limit(100).stream():
-                job = doc.to_dict()
-                if (job.get("lease_until", 0) < now
-                        and (status != "queued" or now - job["created_at"] >= 120)):
-                    # A new bounded recovery name also survives an exhausted task's dedup tombstone.
-                    yield doc.id, f'{job.get("attempts", 0)}-recovery-{int(now // 900)}'
-
-
-def dispatch(job_id: str, attempt=0):
-    client = tasks_v2.CloudTasksClient()
-    parent = client.queue_path(os.environ["GOOGLE_CLOUD_PROJECT"], os.environ["TASK_REGION"], os.environ["TASK_QUEUE"])
-    try:
-        client.create_task(parent=parent, task=tasks_v2.Task(
-            name=f"{parent}/tasks/research-{job_id}-{attempt}",
-            http_request=tasks_v2.HttpRequest(
-                http_method=tasks_v2.HttpMethod.POST,
-                url=f'{os.environ["WORKER_URL"].rstrip("/")}/internal/jobs/{job_id}',
-                headers={"Content-Type": "application/json"},
-                body=b"{}",
-                oidc_token=tasks_v2.OidcToken(
-                    service_account_email=os.environ["TASK_SERVICE_ACCOUNT"],
-                    audience=os.environ["WORKER_AUDIENCE"],
-                ),
-            ),
-            dispatch_deadline=Duration(seconds=600),
-        ))
-    except AlreadyExists:
-        pass

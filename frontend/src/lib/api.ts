@@ -10,7 +10,7 @@ export async function requestJson(path: string, options: RequestInit = {}): Prom
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     cache: "no-store",
-    signal: options.signal ?? AbortSignal.timeout(60000),
+    signal: options.signal ?? AbortSignal.timeout(cloudEnabled && options.method === "POST" ? 420000 : 60000),
     headers,
   });
   const data: unknown = await response.json();
@@ -21,4 +21,4 @@ export async function requestJson(path: string, options: RequestInit = {}): Prom
   }
   return data;
 }
-import { authorization } from "./auth-client";
+import { authorization, cloudEnabled } from "./auth-client";

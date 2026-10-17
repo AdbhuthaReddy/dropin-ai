@@ -1,14 +1,23 @@
 # DropIn.ai
 
-A component-shortage research demo with a local development mode and a GCP/Firebase deployment package: visualize a BOM, simulate shortages, research exact parts, and compare original/alternative datasheets for human engineering review.
+A component-shortage research demo with local development and a single-service Cloud Run deployment: visualize a BOM, simulate shortages, research exact parts, and compare original/alternative datasheets for human engineering review.
 
-## Deploy the automatic workflow on GCP
+## Deploy for the hackathon (Google free allowances)
 
-See **[DEPLOYMENT.md](./DEPLOYMENT.md)** and [deploy/gcp.ps1](./deploy/gcp.ps1) for setup, architecture, IAM, cost controls, Google sign-in, Cloud Run, Cloud Tasks, Firestore and optional Firebase Hosting.
+Use **one Cloud Run service** for both dashboards and the API, plus **Firestore** for inventory and saved reports that survive restarts. No Firebase Auth/web setup, Firebase CLI, Cloud Tasks, Scheduler or separate worker is needed.
 
-In cloud mode, an edit crossing **below** safety stock automatically queues exact-part research. If sufficient reported exact stock is not evidenced, the worker retrieves an original public datasheet, searches for alternatives using its actual text, retrieves candidate datasheets and checks comparison quotations. Reports list similarity, differences, unknowns, and software/firmware/hardware considerations. Public viewing is open; interactive actions require Google sign-in and obey shared per-user/global budgets.
+1. Create a **billing-enabled** Google Cloud project; in Secret Manager add `dropin-gemini` (API key) and `dropin-presenter` (random 24+ character passcode).
+2. Sign in with `gcloud auth login`, then run this from the repository root in PowerShell:
 
-The deployment package is prepared for you to run; it has **not** been deployed or certified in a GCP account here. Real source access, Google sign-in, IAM and Gemini quota must pass the deployment guide's acceptance checklist. The current provider account previously returned sourcing quota errors.
+   ```powershell
+   .\deploy\demo.ps1 -Project "your-project-id" -EnablePublicDocumentResearch
+   ```
+
+3. Open the printed URL and unlock presenter access. Public viewing is open; changes and AI calls need the passcode. A stock edit crossing **below** safety stock automatically runs exact-to-alternative datasheet research during that request. Firestore stores real stages/evidence. Keep the tab open; interrupted work has an explicit Resume action after lease expiry rather than an unattended queue.
+
+See **[DEPLOYMENT.md](./DEPLOYMENT.md)** for the short setup, permissions, free allowances, billing alerts and acceptance checklist. Defaults: scale to zero, max one instance, three shared research jobs/day. **Free allowances are not a spending cap**; builds, storage, network traffic and Gemini/Search have separate quotas/costs. Deployment does not solve the previously observed Gemini 429.
+
+The package has **not** been deployed in a GCP account here. There is one supported cloud architecture and one deployment script.
 
 > Not connected to SAP or live distributor inventory. No purchase orders, stock receipts, OEM escalations, or engineering approvals are created. Research never changes on-hand stock.
 
@@ -35,7 +44,7 @@ flowchart LR
   Evidence --> Review[Human engineering review - never auto-approved]
 ```
 
-The diagram above shows default **local development**. SQLite is its source of truth, not browser localStorage. Cloud deployments instead use Firestore and durable Cloud Tasks workers; their diagram is in the deployment guide. Tabs refresh automatically. Stale edits are rejected rather than overwriting a newer value. Inventory status and research status are separate: an item can have completed research and still be below safety stock. Equality with safety stock is in spec; a shortage means strictly less.
+The diagram above shows default **local development**. SQLite is its source of truth, not browser localStorage. The recommended cloud demo uses Firestore and request-bound automatic research; its diagram is in the deployment guide. Tabs refresh automatically. Stale edits are rejected rather than overwriting a newer value. Inventory status and research status are separate: an item can have completed research and still be below safety stock. Equality with safety stock is in spec; a shortage means strictly less.
 
 Old browser-local inventory is intentionally not imported or deleted because it may contain stock previously fabricated by research results. The shared demo starts from the canonical BOM and then persists explicit edits in SQLite.
 
@@ -61,7 +70,7 @@ The [setup script](./setup.ps1):
 4. Creates `backend\.env` and `frontend\.env.local` from safe local-mode examples **only when missing**. Existing settings, keys, environments and inventory are not deleted or overwritten.
 5. Checks Python dependency consistency/imports, generates Next.js route/environment types for the fresh checkout, and checks frontend TypeScript. A failed command stops setup with an error rather than reporting success.
 
-Internet access and disk space are required. Stop running frontend services before rerunning setup because `npm ci` replaces `node_modules`. Setup does not start servers, call Gemini, request secrets, or provision GCP/Firebase. The default local mode uses SQLite and manual research; automatic background sourcing requires the separate [cloud deployment](./DEPLOYMENT.md). Existing cloud-configured environment files are preserved, not silently changed into local mode. An incomplete/old virtual environment is reported rather than deleted.
+Internet access and disk space are required. Stop running frontend services before rerunning setup because `npm ci` replaces `node_modules`. Setup does not start servers, call Gemini, request secrets, or provision cloud resources. The default local mode uses SQLite and manual research; automatic request-bound sourcing requires the [cloud deployment](./DEPLOYMENT.md). Existing cloud-configured environment files are preserved, not silently changed into local mode. An incomplete/old virtual environment is reported rather than deleted.
 
 Optional setup controls:
 
@@ -146,10 +155,10 @@ PDF limits: 10 MiB, 120 pages, and 160,000 extracted characters per file. No OCR
 - [frontend/src/app/](./frontend/src/app/): dashboard, ERP, PDF comparison, metadata, and styles.
 - [backend/tests/](./backend/tests/), [frontend/tests/](./frontend/tests/): offline regressions using generated synthetic data, not provider quota.
 - [.github/workflows/checks.yml](./.github/workflows/checks.yml): backend tests, frontend tests, lint, and build.
-- [cloud_state.py](./backend/app/services/cloud_state.py), [identity.py](./backend/app/services/identity.py): Firestore transactions/budgets, Cloud Tasks delivery and verified identities.
+- [cloud_state.py](./backend/app/services/cloud_state.py), [identity.py](./backend/app/services/identity.py): durable Firestore transactions/budgets, leases and presenter-passcode verification.
 - [workflow.py](./backend/app/services/workflow.py), [public_sources.py](./backend/app/services/public_sources.py): exact-to-alternative workflow and bounded robots-aware public retrieval.
 - [pdf_extract.py](./backend/app/services/pdf_extract.py), [pdf_worker.py](./backend/app/services/pdf_worker.py): shared extraction and a killable credential-free parser process.
-- [deploy/](./deploy/), [firebase.json](./firebase.json): GCP provisioning/builds and Firebase routing/rules configuration.
+- [deploy/](./deploy/): one deployment script, Docker image, Cloud Build configuration, proxy and process supervisor.
 
 ## Checks
 
@@ -163,4 +172,4 @@ npm run lint
 npm run build
 ```
 
-See [technical.md](./technical.md) for architecture, contracts, algorithms, latency, concurrency, and limitations. [CHANGE_REPORT.md](./CHANGE_REPORT.md) records the audit and subsequent fixes. Historical findings there describe the pre-fix implementation.
+See [technical.md](./technical.md) for architecture, contracts, algorithms, latency, concurrency, and limitations. [CHANGE_REPORT.md](./CHANGE_REPORT.md) records the cleanup, validation and remaining go-live gates.

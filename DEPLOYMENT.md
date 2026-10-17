@@ -1,171 +1,129 @@
-# GCP / Firebase deployment
+# Simple hackathon deployment: one Cloud Run service
 
-This package targets a **budget-limited public hackathon demo**, not autonomous procurement or an unrestricted production service. It has not been deployed into a GCP account from this workspace. Follow the acceptance checklist before submitting a URL.
+**Recommended path:** Cloud Run serves both Next.js dashboards and the FastAPI backend at **one URL**. Firestore retains inventory and evidence reports across restarts. No Firebase project/web app, Firebase CLI, Google sign-in setup, Cloud Tasks, Scheduler, separate worker or custom domain is required.
 
-## 1. Architecture and requested flow
+This uses **Google free allowances**, not a paid subscription tier. **A billing-enabled Google Cloud project is still required. Zero charges cannot be guaranteed.** Usage beyond allowances, container storage/builds/network traffic and Gemini/Search can incur charges. Billing budgets send alerts; they do not stop spending.
+
+The package has local automated coverage but has **not been deployed to Google Cloud here**. Your account must pass the acceptance checklist below.
+
+## 1. One-time preparation
+
+1. Create/select a Google Cloud project and link billing. Prefer a **new hackathon-only project** so other workloads do not consume allowances. Use `us-central1` for the documented setup.
+2. Open **Cloud Shell** in Google Cloud Console, or install [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) on Windows and run `gcloud auth login`. The deployment script is PowerShell: Windows PowerShell 5.1/PowerShell 7 works. In Linux Cloud Shell, install/use PowerShell first or run the script from Windows; it is not a Bash script. No local Docker, Node or Python installation is needed for deployment builds.
+3. In Console, enable **Secret Manager API**, then create these two secrets (automatic replication is fine):
+
+   | Secret name | Value |
+   |---|---|
+   | `dropin-gemini` | Your Gemini API key with available model and Google Search quota |
+   | `dropin-presenter` | A randomly generated **24+ character** presenter passcode; keep it private |
+
+   Use Console's secret value field, not source code, frontend configuration, shell arguments or chat. Each secret needs an enabled version. The script checks only secret metadata and mounts the values at runtime.
+4. Set a small billing budget (for example $1 or your preferred amount) with alerts. Review current [Cloud Run](https://cloud.google.com/run/pricing), [Firestore](https://cloud.google.com/firestore/pricing), [Cloud Build](https://cloud.google.com/build/pricing), [Artifact Registry](https://cloud.google.com/artifact-registry/pricing), [Secret Manager](https://cloud.google.com/secret-manager/pricing) and [Gemini limits](https://ai.google.dev/gemini-api/docs/rate-limits). Do not assume a Gemini paid-tier account or switch one on to fix a quota failure.
+
+The deploying account needs permission to enable services, create Firestore/Artifact Registry/service accounts, grant the listed IAM roles, submit Cloud Build jobs, use the runtime/build identities and deploy public Cloud Run services. Project owners commonly have these permissions; organization policy can still prohibit public access. Do not grant Owner to the runtime service account.
+
+## 2. Deploy from the cloned repository
+
+In PowerShell, at the repository root:
+
+```powershell
+.\deploy\demo.ps1 -Project "your-project-id" -EnablePublicDocumentResearch
+```
+
+If local script execution is blocked, use the process-scoped form:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy\demo.ps1 `
+  -Project "your-project-id" -EnablePublicDocumentResearch
+```
+
+The consent switch authorizes permitted public datasheet retrieval and transmission of extracted text to Gemini. Private uploaded PDFs still require separate per-request consent.
+
+That is the only deployment command. The script:
+
+- Enables the required runtime/build/storage and supporting IAM/resource-management APIs.
+- Creates the default Firestore Native database if missing (free allowance applies to one eligible database). Existing inventory and reports are preserved on redeploy.
+- Creates one Artifact Registry repository and two service accounts: runtime (Firestore + access to the two secrets only) and build (artifact writer, build logs writer and source-object reader).
+- Uploads the checkout to Cloud Build; builds one image using [deploy/Dockerfile](./deploy/Dockerfile). Environment files, local inventory and keys are excluded by upload/build ignore files.
+- Deploys **`dropin-demo`**, request-based CPU billing, **0 minimum instances / 1 maximum instance**, **1 CPU / 1 GiB RAM**, 10 concurrent requests and a 480-second request timeout. No always-on worker is billed.
+- Checks the web page, API health and inventory without spending Gemini quota, then prints your one shareable HTTPS URL.
+
+First builds can take several minutes. If a command fails, resolve the reported permission/quota/configuration error and rerun. IAM propagation may need a short wait. The script does not silently ignore failed provisioning. It does not change an existing Firestore database's location or type; use a compatible project/default Native database.
+
+If your default model IDs are not available, pass one or two exact model IDs from your own AI Studio account:
+
+```powershell
+.\deploy\demo.ps1 -Project "your-project-id" -EnablePublicDocumentResearch `
+  -GeminiModels "YOUR_SEARCH_CAPABLE_MODEL_ID,YOUR_FALLBACK_MODEL_ID"
+```
+
+This is the only supported cloud deployment path.
+
+## 3. Present the demo
+
+1. Open the printed URL. Visitors can view both dashboards, inventory and public research reports without signing in.
+2. Enter your presenter passcode in the banner and select **Unlock**. The server validates it. It is held only in browser memory, never in the frontend build or localStorage; refresh requires unlocking again. Share only with trusted presenters/judges. This is shared demo access, not per-user production authentication.
+3. Select **Drop PMIC**, or explicitly save stock **below** its safety threshold. The versioned edit atomically persists inventory, reserves a daily job allowance and creates a research record in Firestore.
+4. The same HTTP request runs exact-source discovery -> checked sufficient reported exact offer -> otherwise original datasheet -> candidate discovery -> candidate datasheets -> citation-checked comparison. It can take **up to six minutes**. Other tabs poll actual saved stages; stock is never increased by research.
+5. Keep the tab open while the request runs. If it fails/disconnects/restarts, refresh inventory. If marked running, select **Resume interrupted research** after its last eight-minute lease expires. No scheduler retries work unattended; a lease permits at most two worker claims before explicit new research is needed. Reset/stock edits invalidate old jobs so late results cannot overwrite new inventory.
+6. Review evidence, similarity, unknowns and software/firmware/hardware implications. Download the report. Every alternative stays on engineering hold. A missing/blocked datasheet or quota error remains a failure, never an invented substitute.
+
+Already-below-threshold edits do not automatically call Gemini again. Use the explicit workflow button for a new attempt. Equality with safety stock is in spec.
+
+Defaults: **3 shared research jobs/day and 100 actions/day**, reset at UTC midnight. Uploaded document requests count against the same research allowance (including extraction-only requests). A resumed job consumes an action, not a new job allowance; it can repeat provider operations. A workflow can make multiple provider/model calls, so "3 jobs" does not mean "3 Gemini requests." These are application limits, not a cap on all Google charges.
+
+Public reports/stock are readable by anyone with the URL. Never put confidential input into the public workflow. Existing source allowlists, robots/DNS/HTTPS checks and byte/time limits remain; the app does not bypass blocked websites or provide an unrestricted web scraper.
+
+## Architecture
 
 ```mermaid
-flowchart TB
-  Visitor[Public visitors / hackathon judges] --> Hosting[Firebase Hosting - optional]
-  Hosting --> Web[Cloud Run: dropin-web]
-  Reviewer[Google-signed-in reviewer] --> Web
-  Web -->|Firebase bearer token on writes| API[Public Cloud Run: dropin-api]
-  API -->|transactional state + budgets + job outbox| DB[(Firestore)]
-  API --> Tasks[Cloud Tasks - research queue]
-  Scheduler[Cloud Scheduler every 2 minutes] -->|OIDC| Worker[Private Cloud Run: dropin-worker]
-  Scheduler -->|recover outbox and expired leases| DB
-  Tasks -->|OIDC service identity| Worker
-  Worker --> Exact[Search for exact manufacturer / MPN]
-  Exact --> Fetch[Fetch permitted product page and check quoted stock]
-  Fetch --> Enough{Enough reported stock?}
-  Enough -->|Yes| Result[Public evidence report - no order / stock change]
-  Enough -->|No evidenced offer| Original[Retrieve and parse original public datasheet]
-  Original --> Alternative[Gemini + search: at most 2 candidates]
-  Alternative --> Candidate[Retrieve candidate datasheets]
-  Candidate --> Compare[Gemini comparison + exact quotation/page validation]
-  Compare --> Review[Similarity + software/firmware/hardware caveats - engineering hold]
-  Review --> DB
-  Result --> DB
+flowchart LR
+  Browser[Public viewer / passcode presenter] --> Run[One Cloud Run service]
+  subgraph Run
+    Proxy[Nginx :8080] --> Web[Next.js :3000]
+    Proxy --> API[FastAPI :8081]
+    API --> Flow[Request-bound exact-to-alternative research]
+  end
+  API <--> DB[(Firestore: durable inventory, budgets, jobs/reports)]
+  Flow --> Gemini[Gemini API + Google Search]
+  Flow --> Sources[Permitted public pages / datasheets]
+  Secrets[Secret Manager: API key + presenter passcode] --> Run
 ```
 
-- State and jobs survive Cloud Run cold starts in Firestore. Do not use SQLite on Cloud Run.
-- Public visitors can inspect inventory and saved public research reports. Google sign-in is required for stock edits, reset, workflow requests and document uploads.
-- Any verified Google account is admitted by default. Set `ALLOWED_EMAILS` if you later want an allowlist.
-- A stock edit that crosses from `stock >= safetyStock` to **`stock < safetyStock`** enqueues the workflow when automation is enabled. Equality is not a shortage. Edits while already below threshold do not repeatedly spend quota; use the explicit workflow button to retry.
-- Exact success requires matching MPN/manufacturer quotes on a fetched page and quoted reported quantity sufficient to restore safety stock. Model interpretation of the page can still be wrong. It is **not** a verified API offer, checkout, reservation or guaranteed stock.
-- If no evidenced sufficient exact offer is found, the original datasheet is actually retrieved and its extracted text guides candidate discovery. Each candidate needs its own retrieved, MPN-relevant PDF and checked quotations before appearing as a compared alternative.
-- Sources that block crawlers or do not provide usable evidence remain explicit errors. A failed provider call is not evidence of global unavailability. We do not bypass CAPTCHAs, paywalls, authentication, robots policies or source restrictions.
-- All substitutions remain held for engineering review. Similarity is an unweighted match fraction of reported comparisons, **not** a probability of interchangeability. Unknown software/firmware effects remain unknown, never implicitly safe.
+All browser API calls are same-origin; no separate frontend API URL or authorized-domain/CORS setup. An internal proxy routes `/api/*`, `/health`, `/ready` and API docs to Python and other pages/assets to Next.js. The process supervisor stops the container if any of its three child services exits. There are no separate worker endpoints.
 
-## 2. Before provisioning (your account)
+## Staying within free allowances
 
-1. Create a billing-enabled GCP project and add Firebase to that same project in Firebase Console.
-2. Enable **Firebase Authentication > Google** and choose a support email. Obtain the Firebase web application's public `apiKey`, `projectId` and `authDomain`. These browser configuration values are not the Gemini secret.
-3. Install Google Cloud CLI and Firebase CLI. Sign in on your own machine using `gcloud auth login` and `firebase login`. Do not paste tokens or keys into chat or source files.
-4. In Secret Manager, create **`dropin-gemini`**, add an enabled version containing your Gemini key, and confirm billing/quota/search-enabled model access in your provider account. The previous live search test returned 429 on both configured models; deploying does not fix that quota.
-5. Use a deployment identity with permission to enable APIs, create Cloud Run/Firestore/Tasks/Scheduler resources, manage the documented service-account IAM bindings, submit builds and deploy Firebase rules. A locked-down organization may require an administrator to provision these instead.
-6. Review the terms and robots policy of source domains you permit. Automatic downloading/public evidence publication is deployment-opt-in, not a license to redistribute entire datasheets. Only short evidence excerpts and metadata are retained; original PDF bytes/full extracted pages are not saved.
-
-The script creates billable resources and enables APIs. Review it before running. It does not create a billing account, change organizational policies, purchase provider quota or enable Google sign-in for you.
-
-## 3. Deploy Cloud Run services
-
-From the repository root, with the public Firebase web API key (not the Gemini key):
-
-```powershell
-.\deploy\gcp.ps1 `
-  -Project "your-project-id" `
-  -FirebaseApiKey "your-public-firebase-web-api-key" `
-  -EnablePublicDocumentResearch
-```
-
-The default region is `us-central1`; use `-Region` for a compatible alternative. `-AuthDomain` overrides the default `your-project-id.firebaseapp.com`. `-GeminiModels` sets at most two ordered provider models.
-
-The script:
-
-- Enables required APIs, creates Firestore Native database if absent, and deploys deny-all browser Firestore rules.
-- Creates Artifact Registry and builds both images in Cloud Build. Docker is not required on your machine.
-- Creates separate runtime, task identity, build, and unprivileged web service accounts.
-- Grants runtime Firestore access, task enqueueing, Firebase user-read access for revoked-token checks, and access only to the named Gemini secret.
-- Configures a two-concurrent-task queue with bounded retries.
-- Deploys the API publicly, and the worker privately with task-identity-only Cloud Run invocation. Internal routes also validate the OIDC audience and exact service-account email in application code.
-- Bootstraps with automatic research disabled, fills the real worker target/audience, then enables automatic public research.
-- Creates the two-minute outbox/expired-lease recovery schedule.
-- Builds the browser with its API/Firebase configuration; Next public variables are fixed **at build time**.
-- Configures API CORS for the Cloud Run frontend and the default Firebase Hosting domains, then checks basic HTTP responsiveness.
-
-IAM propagation can briefly delay newly granted permissions. If a command fails, read the error, resolve permissions/configuration and rerun; do not disable authentication to work around it. Existing jobs and budgets persist across redeployments. A script failure is not a successful deployment.
-
-## 4. Finish Firebase and publish the URL
-
-1. Add the emitted Cloud Run frontend hostname to **Firebase Authentication > Settings > Authorized domains**. Add your chosen Firebase Hosting/custom hostname too. Without this, Google popup sign-in fails with an unauthorized-domain error.
-2. Test directly at the emitted Cloud Run frontend URL.
-3. For a Firebase Hosting URL:
-
-   ```powershell
-   firebase deploy --only hosting --project your-project-id
-   ```
-
-   The checked-in Hosting rewrite targets `dropin-web` in `us-central1`. Change the region in [firebase.json](./firebase.json) if you deployed elsewhere; Firebase Hosting only supports its documented Cloud Run integration regions. Do not upload the Next source tree as static hosting.
-4. For custom domains, update both Firebase authorized domains and `FRONTEND_ORIGINS` on the API. CORS is not authentication.
-5. Restrict the public Firebase web key appropriately in Google Cloud Console and enable Firebase/Auth abuse protection appropriate to your submission. Do not expose the Gemini key in frontend build arguments.
-
-Direct Firestore client reads/writes are forbidden. Firebase Admin/Firestore server libraries use service-account IAM, so the public application configuration cannot grant database write access.
-
-## 5. Configuration and cost limits
-
-| Backend setting | Script/default behavior |
+| Resource | Configuration / important limit |
 |---|---|
-| `STATE_BACKEND=firestore` | Required on Cloud Run; startup rejects ephemeral SQLite |
-| `GOOGLE_CLOUD_PROJECT` | Same Firebase/GCP project |
-| `GEMINI_API_KEY` | Secret Manager injection, never a browser variable |
-| `GEMINI_MODELS` | Up to two provider attempts per operation |
-| `AUTO_RESEARCH_ENABLED=true` | Automatically queue threshold crossings |
-| `PUBLIC_DATASHEET_CONSENT=true` | Explicit operator permission to process permitted public datasheets with Gemini |
-| `PUBLIC_SOURCE_HOSTS` | Allowed domain suffixes; default TI, Analog Devices, NXP, ST, Microchip, Infineon, onsemi, Mouser, DigiKey |
-| `BOARD_REQUIREMENTS` | Optional public demo circuit constraints, maximum 8,000 characters; no private design secrets |
-| `USER_DAILY_JOBS` / `GLOBAL_DAILY_JOBS` | 3 / 20 accepted workflows or document-processing requests per UTC day |
-| `USER_DAILY_ACTIONS` / `GLOBAL_DAILY_ACTIONS` | 40 / 400 mutations/processing requests per UTC day |
-| `ALLOWED_EMAILS` | Empty allows verified Google reviewers; optional comma-separated allowlist |
-| `TASK_REGION`, `TASK_QUEUE` | Queue location and `research` |
-| `TASK_SERVICE_ACCOUNT` | OIDC identity permitted to invoke worker/internal recovery |
-| `WORKER_URL`, `WORKER_AUDIENCE` | Actual private worker URL and matching OIDC audience |
-| `FRONTEND_ORIGINS` | Exact frontend origins permitted by CORS |
+| Cloud Run | Request-based billing, scales to zero. Published monthly allowance: 2 million requests, 180,000 vCPU-seconds and 360,000 GiB-seconds (us-central1 pricing basis). Cold starts, polling and long research requests consume allowances. Other projects on the billing account share the free tier. |
+| Firestore | Default Native database; normal free allowance includes 1 GiB storage, 50,000 reads/day, 20,000 writes/day and 20,000 deletes/day for one eligible database. Polling uses a three-second server snapshot cache. Many cold starts or visitors still increase reads. Backups/PITR/TTL features are not provisioned. |
+| Gemini + Search | Separate provider quotas/pricing, not included with Cloud Run. Choose models with available free allowance. Google Search/tool usage may have separate limits/charges. Previous local sourcing returned 429: deployment does not fix it. If no free quota is available, inventory/local extraction can be shown but live research cannot be promised. |
+| Build / image storage | Free allowances are small/shared. Rebuilding and retaining multiple large images can exceed them. Only one image is built per deployment; delete old images and uploaded build sources when no longer needed. Image size is not guaranteed to fit Artifact Registry's free storage allowance. |
+| Secrets / logs / egress | Two secrets, no key in image. Versions/access, build/runtime logs and outbound traffic have their own limits. Do not enable verbose payload logging or claim all internet egress is free. |
 
-Each accepted job reserves its budget transactionally with the stock update/job outbox. Budget exhaustion rejects the triggering mutation with 429; it does not silently skip automatic research. Duplicate delivery/stock revisions do not charge new jobs. Invalid upload requests can consume a processing budget reservation because authentication/budget checks run before parsing uploaded bytes.
+**Not a hard spending cap:** max-instances=1 limits normal scaling, not cumulative runtime, attacks on public reads, provider tokens, build storage or exceptional overlap during deployments. Keep the URL short-lived, restrict who receives the passcode, monitor Billing/Firestore/AI Studio, and delete the demo service when judging ends. Do not pay for a different tier unless you deliberately choose to.
 
-One workflow can make up to **7 provider operations** (exact discovery, at most two page extractions, original discovery, alternative discovery, two comparisons), each with up to two configured model attempts. A process-interrupted job can be claimed a second time, so budgets cap accepted work, not exact monetary cost. Output is capped at 8,192 tokens per operation; input datasheets can still be large. Configure actual Google billing budgets/alerts and provider quotas. Billing alerts are **not hard spend cutoffs**.
+## Acceptance checklist (your account)
 
-- Provider deadline: 45 seconds including capacity wait; transport timeout 20 seconds.
-- Workflow deadline: 360 seconds; worker HTTP/task deadline: 600 seconds.
-- Worker lease: 480 seconds, refreshed at stages; at most two worker claims.
-- Queue dispatch concurrency: 2; worker concurrency: 1; Cloud Run max instances: 2 per service. API/worker memory: 2 GiB each; frontend: 512 MiB.
-- Document workflow: 55 seconds; parser: 15-second wall timeout, 10-second CPU and 768 MiB address-space limits on Linux.
-- PDF limits: 10 MiB, 120 pages, 160,000 extracted characters; no OCR. Parsing occurs in a killable subprocess without provider credentials.
-- Cloud frontend polls every five seconds; API snapshots cache for three seconds per instance. Cross-tab convergence can take roughly eight seconds plus network/scheduling time. Local mode retains one-second polling.
-- Public GETs still incur hosting/Cloud Run/Firestore costs. Daily research budgets do not rate-limit public viewing or guarantee resistance to deliberate HTTP abuse. Add edge protection/API quotas for exposure beyond the jury.
+- [ ] Open `/`, `/erp-simulator`, `/datasheets`, `/health` and `/api/inventory` at the same URL.
+- [ ] An anonymous/wrong-passcode stock POST is rejected; valid passcode unlocks actions. No Firebase popup is needed.
+- [ ] In two tabs, a stock edit appears in both; equality with safety stock triggers no job.
+- [ ] One below-safety edit produces real persisted research stages and no Tasks/Scheduler resources.
+- [ ] With available quota and permitted sources, exact/alternative evidence is saved and visible in both tabs. Missing evidence remains explicit. No stock receipt/order/approval is created.
+- [ ] Refresh/redeploy: inventory and completed reports persist. Test interrupted-job Resume after lease expiry with no stale result overwrite.
+- [ ] Verify free allowances, billing alerts, provider quota and current image/storage usage.
 
-## 6. Recovery, privacy and operations
+Offline tests do not prove real IAM, Firestore, Docker runtime, source access or Gemini quota; run this checklist before submitting the URL.
 
-Firestore stores a small shared inventory document, individual job reports, and hashed-UID/day budget counters. No email, Firebase bearer token, entire PDF or full page text is stored in public reports. Public results include MPNs, source URLs, hashes, short quotations, comparison findings and model provenance. Private manually uploaded document results are returned only to their requester and are not saved as public jobs.
+## Update, stop and remove
 
-Cloud Tasks handles normal delivery; Scheduler repairs a committed outbox whose task enqueue failed, and expired worker leases. Stale/reset jobs cancel before another stage or before persisting results. Terminal jobs are idempotent. Cancellation cannot undo already incurred provider costs. After two interrupted claims, the job records an explicit failure; a reviewer can retry within the budget.
+Redeploy with the same command; Firestore remains. Updating a secret requires an enabled version and redeployment to load it.
 
-Use Cloud Logging to filter `request_id` / `job_id`. Alert on 429/503 provider errors, failed jobs, long-queued jobs, task backlog, Cloud Run memory failures, Firestore errors and billing. The script creates the schedule, **not a staffed monitoring service or configured alert channels**. Configure those in your project before extended public use.
-
-Choose retention for `research_jobs` and `budgets`, restrict operator access, and take Firestore backups if the demonstration state matters. Expired budget documents no longer affect today's limits but are not automatically deleted. Do not delete current budgets to evade the published cost controls.
-
-This is a shared demonstration: any admitted reviewer can edit/reset the same BOM, and other reviewers will see it. It is not tenant-isolated. Real SAP ingestion, trusted distributor APIs, purchasing, goods receipts and signed engineering approvals remain outside this deployment.
-
-## 7. Mandatory acceptance checks in your project
-
-- [ ] Anonymous inventory/report GETs work; anonymous POSTs return 401, including malformed uploads.
-- [ ] Google sign-in succeeds on the actual submission hostname; a revoked/disabled account cannot mutate state.
-- [ ] A stock edit exactly equal to safety stock does not queue research; crossing below queues one job.
-- [ ] API/worker logs show a real Cloud Tasks invocation; direct unauthenticated worker calls fail.
-- [ ] Duplicate task delivery does not run two workers; reset during research prevents late results from attaching.
-- [ ] At least one permitted live product page is retrieved; blocked/robots-denied sources remain errors, not invented facts.
-- [ ] With available Gemini quota, exercise exact-success and original/candidate-datasheet branches using permitted public documents.
-- [ ] Reports show source URLs, document hashes, actual model IDs, exact page quotations, similarity limits and explicit software/firmware/hardware unknowns/changes.
-- [ ] Budget exhaustion returns 429 and no provider call; a Cloud Run cold start preserves inventory/jobs.
-- [ ] Recovery schedule is active; monitoring/billing alerts and retention are configured.
-- [ ] Rebuild the frontend after changing any public API/Firebase variables.
-
-Offline tests use controlled SDK/Firestore implementations, not a live cloud account or an emulator. Cloud IAM, service provisioning, Firebase sign-in and real sourcing require this acceptance pass. The local Docker daemon/Google Cloud CLI were unavailable during preparation, so no container execution or deployment success is claimed.
-
-## 8. Local development
-
-The existing SQLite/manual-research mode remains available without Firebase:
+Stop public serving after judging (does not delete saved Firestore reports or images):
 
 ```powershell
-cd backend
-python -m unittest discover -s tests -v
-cd ..\frontend
-npm test
-npm run lint
-npm run build
+gcloud run services delete dropin-demo --region us-central1 --project YOUR_PROJECT_ID
 ```
 
-Leave `STATE_BACKEND` at its default and `NEXT_PUBLIC_CLOUD_MODE` unset for local mode. Automatic durable research intentionally requires the cloud configuration rather than a background task tied to a development-server request.
-
-Runtime JavaScript dependency audit passes (`npm audit --omit=dev`). Full dependency audit still reports upstream build-time globbing/CLI advisories with no compatible published braces fix at preparation time. `shadcn` remains a **dev/build dependency** because the stylesheet imports it; forcing an old framework version is not a safe remediation. Recheck patched releases before a broader production rollout.
+If this was a dedicated disposable project, deleting it in Console is the simplest complete cleanup **after exporting any reports you want**. Otherwise remove only this demo's resources deliberately: Artifact Registry repository `dropin-demo`, build-source objects, the two secrets/service accounts and the app's Firestore documents. Never delete a shared database/project to clean up this demo. Any cloud resources from previous deployments are not removed by source cleanup and may still cost money.

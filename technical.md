@@ -1,41 +1,33 @@
 # DropIn.ai technical reference
 
-Current implementation includes local development and a GCP/Firebase hackathon deployment package. Historical defects and results are preserved in [CHANGE_REPORT.md](./CHANGE_REPORT.md). Cloud provisioning/live acceptance has not been executed here; see [DEPLOYMENT.md](./DEPLOYMENT.md).
+Current implementation includes local development and a single-service Google Cloud hackathon deployment. Cleanup and verification boundaries are recorded in [CHANGE_REPORT.md](./CHANGE_REPORT.md). Cloud provisioning/live acceptance has not been executed here; see [DEPLOYMENT.md](./DEPLOYMENT.md).
 
-## Cloud extension: automatic evidence research
+## Recommended hackathon deployment
 
-The default local mode retains SQLite and manual research. `STATE_BACKEND=firestore` plus a cloud-mode frontend enables the following deployment architecture:
+[deploy/demo.ps1](./deploy/demo.ps1) builds one image and deploys one Cloud Run service plus the default Firestore Native database. `STATE_BACKEND=firestore` enables durable revisions, transactions, daily budgets, job leases, the evidence pipeline and report APIs. Authenticated mutations use a constant-time comparison against a 24+ character presenter passcode mounted from Secret Manager; the frontend keeps it only in memory and validates it through `/api/access`. This is shared demo access, not personal identity or multi-tenant authorization.
 
 ```mermaid
-sequenceDiagram
-  participant U as Google-signed-in reviewer
-  participant API as Cloud Run API
-  participant DB as Firestore
-  participant Q as Cloud Tasks
-  participant W as Private Cloud Run worker
-  participant G as Gemini / public permitted sources
-  U->>API: versioned stock edit crossing below safety stock
-  API->>API: verify Firebase identity
-  API->>DB: atomic budget reservation + inventory edit + queued job
-  API->>Q: named HTTP task with OIDC
-  API-->>U: shared queued snapshot
-  Q->>W: authenticated job delivery
-  W->>DB: claim bounded lease
-  W->>G: exact MPN/manufacturer source discovery and page extraction
-  alt sufficient exact reported stock with checked page excerpts
-    W->>DB: exact availability report, no stock mutation
-  else no evidenced sufficient exact offer
-    W->>G: retrieve original PDF and extract actual text
-    W->>G: discover at most two similar documented alternatives
-    W->>G: retrieve candidate PDFs and compare page-labelled text
-    W->>W: check quotes/pages and compute evidence-match fraction
-    W->>DB: public report, change assessments and engineering hold
-  end
+flowchart LR
+  Browser[Viewer / passcode presenter] --> Proxy[Cloud Run: Nginx :8080]
+  Proxy --> Next[Next.js standalone :3000]
+  Proxy --> API[FastAPI :8081]
+  API <--> DB[(Firestore: inventory + jobs/reports + budgets)]
+  API --> Workflow[Request-bound exact-to-alternative workflow]
+  Workflow --> Gemini[Gemini / Search]
+  Workflow --> PDF[Permitted source retrieval / PDF parsing]
 ```
 
-`cloud_state.py` uses one bounded inventory document, separate job documents and hashed-UID/day budget counters. Firestore transaction retries protect concurrent writes; tests use a controlled transactional implementation, not a real emulator. Snapshot reads cache for three seconds per instance; cloud clients poll every five seconds. Startup does not clear live jobs. Cloud Tasks retries, named task deduplication, expiring leases and a two-minute authenticated Scheduler sweep recover dispatch failures/interrupted workers. Recovery task names rotate at fifteen-minute boundaries to avoid exhausted-task tombstones; worker claims remain capped at two. Reset/edit invalidates the job association, preventing stale reports from attaching.
+The combined [Dockerfile](./deploy/Dockerfile) builds Next with same-origin API URLs, cloud workflow UI and presenter mode. [serve.py](./deploy/serve.py) supervises Node, Uvicorn and Nginx, forwarding termination and failing the container if any child exits. The [proxy](./deploy/nginx.conf) routes API/health/docs separately from web assets/pages, with a 22 MiB upload limit and 420-second API read timeout. The client allows 420 seconds for cloud POSTs; Cloud Run allows 480 seconds. Workflow execution remains bounded at 360 seconds; each individual provider operation retains its own 45-second deadline.
 
-`identity.py` verifies Firebase token signature/project/expiry, revocation, verified email and Google provider on writes. Optional email allowlisting is supported. Worker endpoints require a Google-issued OIDC token for the configured audience and exact task service-account email; the worker Cloud Run service is also IAM-private. Public read routes never expose job inputs, private board requirements, user tokens or user identity. Authenticated uploads are budgeted before body parsing.
+On threshold crossing, the existing atomic Firestore edit reserves a job budget and creates a durable job. Instead of dispatching a task, the API awaits the existing leased job runner inside the initiating HTTP request; request-based CPU remains available while it executes. Completed inventory/reports survive cold starts. Interrupted jobs remain resumable explicitly after the last 480-second lease expires; a presenter Resume checks revision, active lease and daily action budget, then uses the same bounded worker claim. There is no unattended outbox sweep or guaranteed background completion in this mode. Existing reset/edit association guards still reject obsolete results.
+
+Default deployment limits: us-central1, min instances 0, max instances 1, 1 CPU/1 GiB RAM, concurrency 10, three shared research jobs and 100 shared actions per UTC day. One job/resume can make multiple provider calls, including model fallback. Public inventory polls every five seconds; the server snapshot cache is three seconds. Authentication is enforced before parsing API POSTs. Private document uploads retain consent and share the daily research budget; public read access remains unauthenticated. There are no separate worker endpoints.
+
+This targets Google free allowances with billing enabled, not guaranteed zero cost: Cloud Run, Firestore, Cloud Build, Artifact Registry, Secret Manager, egress and Gemini/Search have separate eligibility/limits. Budgets are alerts, not hard caps. The [deployment guide](./DEPLOYMENT.md) includes setup, pricing sources, a live checklist and cleanup.
+
+## Automatic evidence research
+
+`cloud_state.py` uses one bounded inventory document, separate job documents and presenter/day plus global/day budget counters. Firestore transaction retries protect concurrent writes; tests use a controlled transactional implementation. Public report routes never expose job inputs, private board requirements or credentials. Startup does not clear active jobs. Explicit Resume uses expiring leases and at most two claims. Reset/edit invalidates job associations, preventing stale reports from attaching.
 
 `workflow.py` performs real sequential stages, not timer-simulated agent progress. `public_sources.py` applies a permitted-domain HTTPS policy, public-address DNS checks, redirect revalidation, robots disallow/delay checks, byte/time limits and explicit refusal of blocked/non-PDF sources. It does not run an arbitrary crawler or bypass access controls. Approved domains are a trust boundary: an attacker-controlled/rebound domain must not be added; these checks are not a substitute for production egress isolation.
 
@@ -45,7 +37,7 @@ The alternative model receives actual original PDF text. Both documents need MPN
 
 `pdf_extract.py` contains the shared local parser; `pdf_worker.py` runs it in a credential-free subprocess. Linux limits CPU/address space/file output, and the parent kills a parser exceeding its wall timeout or cancellation. PDF extraction is not OCR, table/diagram certification or complete sandboxing. Private uploads retain per-request consent; automatic public downloads use the operator's explicit deployment opt-in.
 
-Cloud inventory can serve multiple API instances; it is still a shared hackathon BOM, not a multi-tenant ERP. The images, Cloud Build configs, PowerShell provisioning script, Firebase Hosting/rules/index files and deployment acceptance checklist are documented in [DEPLOYMENT.md](./DEPLOYMENT.md). API keys stay in Secret Manager, public Firebase variables are fixed at frontend build time, and Cloud Run rejects SQLite startup.
+This is a shared hackathon BOM, not a multi-tenant ERP. API keys stay in Secret Manager and Cloud Run rejects SQLite startup. No cloud client libraries are shipped to the browser.
 
 ### Local-mode reference
 
@@ -64,17 +56,17 @@ It does not connect to SAP, retrieve authoritative distributor stock, reserve/re
 | Layer | Implementation |
 |---|---|
 | Web framework | Next.js 16.4 App Router, React 19.3, TypeScript |
-| UI | Tailwind CSS 4, Lucide icons; remaining Base UI/shadcn primitive |
+| UI | Tailwind CSS 4, Lucide icons |
 | 3D | Three.js, React Three Fiber, Drei (lights/environment/controls/lines/shadows) |
 | Client state | Zustand; typed in-memory cache, not localStorage persistence |
 | API | FastAPI, Pydantic 2, Uvicorn |
-| Persistence | Local SQLite; cloud Firestore transactions and durable Cloud Tasks jobs |
-| Cloud identity / hosting | Firebase Google sign-in, Cloud Run API/private worker/web, optional Firebase Hosting |
+| Persistence | Local SQLite; cloud Firestore transactions, budgets and durable reports |
+| Cloud identity / hosting | Presenter passcode, one Cloud Run service, Secret Manager |
 | Gen AI | Google Gen AI SDK async client; configurable model routing and Google Search tool |
 | Documents | pypdf text extraction, SHA-256, Pydantic evidence schemas |
 | Quality | Python unittest, Node native test runner, TypeScript, ESLint, Next production build, GitHub Actions |
 
-Some scaffold dependencies/assets remain installed but are not part of the active flow (for example React Flow and Framer Motion). The active sourcing implementation is one prompted research stage, not a multi-agent procurement/engineering pipeline.
+The cloud workflow has explicit sequential research/evidence stages, not independent autonomous procurement agents. Local manual research uses one prompted provider operation with bounded fallback.
 
 ## 3. Repository map
 
@@ -88,14 +80,18 @@ backend/
       inventory.py                SQLite persistence and revision/token guards
       gemini_engine.py            Provider calls, provenance, output normalization
       datasheets.py               PDF extraction and exact citation verification
-    api/, core/                   Empty compatibility package placeholders
+      cloud_state.py              Firestore transactions, leases, budgets and reports
+      identity.py                 Presenter-passcode verification
+      workflow.py                 Exact-to-alternative evidence stages
+      public_sources.py           Permitted robots-aware public retrieval
+      pdf_extract.py, pdf_worker.py Pure PDF parser and isolated process entry point
   tests/
     test_api.py                   HTTP validation/error/lifecycle integration tests
     test_inventory.py             Shared-state, reset, duplicate, and restart tests
     test_research.py               Provider/normalization/concurrency tests
     test_datasheets.py             Synthetic PDFs, consent, hashes, citation tests
   requirements.txt                Runtime dependencies
-  requirements-dev.txt            Runtime plus HTTP test client
+  requirements-dev.txt            Developer install entry point including runtime/test client
   data/inventory.sqlite3           Runtime demo state, ignored by Git
   datasheets/                     Optional local PDFs, ignored; not auto-submitted
 frontend/
@@ -111,23 +107,23 @@ frontend/
       AIPanel.tsx                  Responsive component selector and shared ResearchCard
       ResearchCard.tsx             Same research controls/result semantics in both dashboards
       InventorySync.tsx            Non-overlapping polling, focus refresh, explicit error banner
-      BOMGraph.tsx                Compatibility wrapper around ThreeDBudsPro
-      ui/button.tsx               Base UI button variants
+      DemoIdentity.tsx             Presenter unlock/lock (cloud only)
+      WorkflowReport.tsx           Structured evidence, stages and explicit Resume
     store/useInventoryStore.ts     Typed snapshot guards, stale-snapshot protection, actions
     lib/api.ts                    Configured API origin, JSON errors and client timeout
-    lib/utils.ts                  Existing class-name utility re-export
+    lib/auth-client.ts             In-memory presenter credential and mode flag
   tests/inventory.test.mjs         Tests actual transpiled store with mocked HTTP
-  public/                         Starter SVG assets; favicon is under app/
   next.config.ts                  Shared-repo Turbopack root and Tailwind loader
   eslint.config.mjs               Next/TypeScript lint
   tsconfig.json                   Strict TypeScript and Next route types
   package.json, package-lock.json  Scripts/dependency metadata
-  components.json                UI generator metadata
   AGENTS.md                       Next.js development guidance
 start.ps1                         Configurable Windows launcher with readiness checks
 .github/workflows/checks.yml      Offline tests, lint and production build
 README.md                         Intern overview and setup
-CHANGE_REPORT.md                  Audit history and fix verification
+CHANGE_REPORT.md                  Cleanup verification and go-live gates
+deploy/                           Single image, build, deploy script, proxy and supervisor
+DEPLOYMENT.md                     Only supported deployment guide and go-live checklist
 ```
 
 The package `__init__.py` files establish Python imports. Ignore files keep credentials, runtime state, caches, installed dependencies, and local PDFs out of Git. A fresh clone needs dependency installation; no commercial datasheet fixture is required because tests generate original synthetic PDFs.
@@ -351,7 +347,7 @@ Both dashboards use the same ResearchCard and backend actions. ERP stock forms r
 There is no latency SLA. Sources of delay include provider queueing, model/search latency, PDF extraction, network overhead, and polling.
 
 - Research provider work: at most two simultaneous calls, two model attempts, 20-second HTTP timeout per attempt, and a 45-second overall deadline including the slot queue.
-- Client fetch timeout: 60 seconds.
+- Client fetch timeout: 60 seconds locally/for reads, 420 seconds for cloud POSTs.
 - Shared-state propagation: approximately one polling interval plus request/scheduling time, not real-time push.
 - PDF comparison admits two concurrent workflows and has a 55-second deadline including capacity wait, extraction, comparison and evidence checks.
 - Local parsing now uses a killable subprocess with a 15-second wall timeout and Linux resource limits. Provider calls use async transport rather than detached worker threads. Broader production upload/network isolation remains a deployment responsibility.
