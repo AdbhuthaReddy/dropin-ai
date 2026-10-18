@@ -31,9 +31,22 @@ class ObsoleteWorkflow(Exception):
 
 def provider_detail(exc: ProviderUnavailable, reference: str) -> str:
     reason = {
-        "quota_exhausted": "Gemini quota exhausted. Check provider limits or configure an available model/account.",
+        "rate_limited": (
+            "Gemini returned HTTP 429 (rate limited or resource exhausted). "
+            "This does not by itself mean your account quota has been used. "
+            "Check active limits and model availability in Google AI Studio for the project "
+            "associated with your API key, then retry or configure another available model."
+        ),
+        "payment_required": (
+            "Gemini rejected the request because prepayment credits for the API project are depleted. "
+            "Review or add credits in Google AI Studio for the project associated with your API key."
+        ),
         "not_configured": "Gemini is not configured. Set the backend API key and restart the service.",
-        "model_unavailable": "Configured Gemini models are unavailable. Check model IDs and account access.",
+        "model_unavailable": (
+            "Configured Gemini models are unavailable to this API key. Check model IDs and account access; "
+            "Gemini 2.5 Flash is no longer available to new users. The current recommended default is "
+            "gemini-3.8-flash."
+        ),
         "deadline_exceeded": "Gemini request deadline exceeded. Retry later.",
     }.get(exc.reason, "Research provider unavailable. Retry later or check backend logs.")
     return f"{reason} Reference: {reference}"

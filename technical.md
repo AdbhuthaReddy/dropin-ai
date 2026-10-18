@@ -238,7 +238,7 @@ sequenceDiagram
 - Calls use the SDK's asynchronous transport, with a 20-second HTTP timeout and one SDK attempt.
 - A 45-second deadline includes waiting for capacity and model fallback.
 - At most two provider operations run concurrently per backend process.
-- Search stays enabled for all sourcing model attempts. There is no silent tool-free sourcing fallback or process-global exhausted-model flag.
+- Search stays enabled for all sourcing model attempts and uses the Gemini Interactions API Google Search tool. There is no silent tool-free sourcing fallback or process-global exhausted-model flag.
 - Invalid/empty JSON or API errors can try the next configured model. Exhaustion, timeout, and invalid business data produce explicit errors, not fake candidates.
 - Grounding URLs/titles come from SDK metadata, not invented model JSON. HTTPS sources are preserved. Source presence does not prove every assertion, current stock, or physical compatibility.
 - Response provenance includes the actual successful model, evidence mode, elapsed provider-operation time, and explicit false stock/datasheet-verification fields.

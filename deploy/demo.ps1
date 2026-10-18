@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Project,
     [string]$Region = "us-central1",
-    [string]$GeminiModels = "gemini-3-flash-preview,gemini-flash-lite-latest",
+    [string]$GeminiModels = "gemini-3.8-flash",
     [switch]$EnablePublicDocumentResearch
 )
 

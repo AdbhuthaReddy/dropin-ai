@@ -132,12 +132,23 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Reference:", self.item()["researchError"])
         self.assertIn("x-request-id", response.headers)
 
-    def test_quota_failure_has_safe_actionable_detail(self):
+    def test_rate_limit_failure_has_safe_actionable_detail(self):
         with patch.object(main, "evaluate_component_shortage", new_callable=AsyncMock,
-                          side_effect=ProviderUnavailable("PRIVATE_PROVIDER_BODY", reason="quota_exhausted")):
+                          side_effect=ProviderUnavailable("PRIVATE_PROVIDER_BODY", reason="rate_limited")):
             response = self.client.post("/api/webhooks/sap-line-down", json={"target_mpn": "TEST"})
         self.assertEqual(response.status_code, 503)
-        self.assertIn("quota exhausted", response.text)
+        self.assertIn("HTTP 429", response.text)
+        self.assertIn("does not by itself mean your account quota has been used", response.text)
+        self.assertIn("Google AI Studio", response.text)
+        self.assertNotIn("PRIVATE_PROVIDER_BODY", response.text)
+
+    def test_depleted_prepayment_has_actionable_detail(self):
+        with patch.object(main, "evaluate_component_shortage", new_callable=AsyncMock,
+                          side_effect=ProviderUnavailable("PRIVATE_PROVIDER_BODY", reason="payment_required")):
+            response = self.client.post("/api/webhooks/sap-line-down", json={"target_mpn": "TEST"})
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("prepayment credits", response.text)
+        self.assertIn("Google AI Studio", response.text)
         self.assertNotIn("PRIVATE_PROVIDER_BODY", response.text)
 
     def test_unexpected_provider_error_has_sanitized_reference(self):

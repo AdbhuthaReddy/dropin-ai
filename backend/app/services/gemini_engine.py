@@ -92,7 +92,7 @@ def provider_configured() -> bool:
 
 def configured_models() -> list[str]:
     return [model.strip() for model in os.getenv(
-        "GEMINI_MODELS", "gemini-3-flash-preview,gemini-flash-lite-latest"
+        "GEMINI_MODELS", "gemini-3.8-flash"
     ).split(",") if model.strip()][:2]
 
 
@@ -114,38 +114,70 @@ async def generate_json(
                 async with genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options=options).aio as client:
                     for model in configured_models():
                         try:
-                            response = await client.models.generate_content(
-                                model=model,
-                                contents=prompt,
-                                config=types.GenerateContentConfig(
+                            if search:
+                                response = await client.interactions.create(
+                                    model=model,
+                                    input=prompt,
                                     system_instruction=system,
-                                    temperature=0.1,
-                                    max_output_tokens=8192,
-                                    tools=[types.Tool(google_search=types.GoogleSearch())] if search else None,
-                                ),
-                            )
-                            if not response.text:
+                                    generation_config={
+                                        "temperature": 0.1,
+                                        "max_output_tokens": 8192,
+                                    },
+                                    tools=[{"type": "google_search"}],
+                                )
+                                response_text = response.output_text
+                            else:
+                                response = await client.models.generate_content(
+                                    model=model,
+                                    contents=prompt,
+                                    config=types.GenerateContentConfig(
+                                        system_instruction=system,
+                                        temperature=0.1,
+                                        max_output_tokens=8192,
+                                    ),
+                                )
+                                response_text = response.text
+                            if not response_text:
                                 raise ValueError("Empty provider response")
-                            parsed = extract_json_from_llm(response.text)
+                            parsed = extract_json_from_llm(response_text)
                             sources: list[Source] = []
-                            for candidate in response.candidates or []:
-                                metadata = candidate.grounding_metadata
-                                for chunk in (metadata.grounding_chunks or []) if metadata else []:
-                                    web = chunk.web
-                                    if web and web.uri and urlparse(web.uri).scheme == "https" and urlparse(web.uri).hostname:
-                                        if not any(source.url == web.uri for source in sources):
-                                            sources.append(Source(title=web.title or web.uri, url=web.uri))
+                            if search:
+                                for step in response.steps or []:
+                                    if step.type != "model_output":
+                                        continue
+                                    for content in step.content or []:
+                                        if content.type != "text":
+                                            continue
+                                        for annotation in content.annotations or []:
+                                            source_url = getattr(annotation, "url", None)
+                                            if (
+                                                source_url
+                                                and urlparse(source_url).scheme == "https"
+                                                and urlparse(source_url).hostname
+                                                and not any(source.url == source_url for source in sources)
+                                            ):
+                                                sources.append(Source(
+                                                    title=getattr(annotation, "title", None) or source_url,
+                                                    url=source_url,
+                                                ))
                             return parsed, Provenance(
                                 model=model,
                                 grounding_status=("search_evidence_returned" if sources else "no_search_evidence") if search else "document_text",
                                 sources=sources,
                                 elapsed_ms=round((time.monotonic() - started) * 1000),
                             )
-                        except (genai.errors.APIError, ValueError) as exc:
-                            code = getattr(exc, "code", None)
+                        except Exception as exc:
+                            code = getattr(exc, "status_code", getattr(exc, "code", None))
+                            if not isinstance(exc, (genai.errors.APIError, ValueError)) and not isinstance(code, int):
+                                raise
+                            if code == 402:
+                                raise ProviderUnavailable(
+                                    "Gemini project prepayment credits are depleted",
+                                    reason="payment_required",
+                                ) from exc
                             if code == 429:
-                                failure_reason = "quota_exhausted"
-                            elif failure_reason != "quota_exhausted":
+                                failure_reason = "rate_limited"
+                            elif failure_reason != "rate_limited":
                                 failure_reason = "model_unavailable" if code == 404 else "provider_unavailable"
                             logger.warning("Gemini attempt failed for model %s", model, exc_info=True)
                     raise ProviderUnavailable("Configured Gemini models did not return usable research", reason=failure_reason)
