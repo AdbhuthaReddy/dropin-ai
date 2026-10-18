@@ -84,7 +84,7 @@ async def discover(mpn: str, purpose: str):
         "search redirects, marketplaces, logins, or paywalls. Prefer original manufacturer PDFs for datasheets.",
         json.dumps({"mpn": mpn, "purpose": purpose,
                     "permitted_domains": os.getenv("PUBLIC_SOURCE_HOSTS", DEFAULT_HOSTS).split(",")}),
-        search=True,
+        search=False,
     )
     return Discovery.model_validate(parsed).urls, provenance.model_dump()
 
@@ -160,7 +160,7 @@ async def run_workflow(item: dict, progress):
         "Do not call a similar part a drop-in. Flag software, firmware, register map, pinout and power-up differences.",
         json.dumps({"original_mpn": item["mpn"], "requirements": item.get("board_requirements", ""),
                     "original_pages": original["pages"],
-                    "permitted_domains": os.getenv("PUBLIC_SOURCE_HOSTS", DEFAULT_HOSTS).split(",")}), search=True,
+                    "permitted_domains": os.getenv("PUBLIC_SOURCE_HOSTS", DEFAULT_HOSTS).split(",")}), search=False,
     )
     report["discovery"].append(provenance.model_dump())
     candidates = Alternatives.model_validate(parsed).candidates

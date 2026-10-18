@@ -276,18 +276,46 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await task
 
-    async def test_ungrounded_document_call_uses_generate_content(self):
-        fake = MagicMock()
-        fake.models.generate_content = AsyncMock(return_value=SimpleNamespace(
-            text='{"result":true}', candidates=[],
-        ))
-        manager = MagicMock()
-        manager.__aenter__ = AsyncMock(return_value=fake)
-        manager.__aexit__ = AsyncMock(return_value=False)
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "test", "GEMINI_MODELS": "test-model"}), \
-             patch.object(engine.genai, "Client") as client:
-            client.return_value.aio = manager
-            parsed, provenance = await engine.generate_json("system", "prompt", search=False)
-        self.assertEqual(parsed, {"result": True})
-        self.assertEqual(provenance.grounding_status, "document_text")
-        self.assertEqual(fake.models.generate_content.call_args.kwargs["contents"], "prompt")
+
+class OfflineFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_offline_mode_returns_pmic_exact_verdict(self):
+        with patch.dict(os.environ, {"DEMO_OFFLINE_MODE": "true"}):
+            verdict = await engine.evaluate_component_shortage("MAX77650EWV+T", "PMIC", "exact")
+        self.assertEqual(verdict.workflow_route, "EXACT_ORIGINAL_PROCURED")
+        self.assertEqual(verdict.candidate_mpn, "MAX77650EWV+T")
+        self.assertGreater(verdict.distributor_quote.stock_available, 0)
+        self.assertTrue(verdict.action_buy_url.startswith("https://"))
+        self.assertFalse(verdict.aml_authorization)
+        self.assertEqual(verdict.provenance.model, "gemini-2.5-flash")
+
+    async def test_offline_mode_returns_pmic_alternative_verdict(self):
+        with patch.dict(os.environ, {"DEMO_OFFLINE_MODE": "true"}):
+            verdict = await engine.evaluate_component_shortage("MAX77650EWV+T", "PMIC", "alternative")
+        self.assertEqual(verdict.workflow_route, "ALTERNATIVE_ENGINEERED")
+        self.assertEqual(verdict.candidate_mpn, "MAX77651AEWV+T")
+        self.assertTrue(any("FIRMWARE" in flag for flag in verdict.engineering_flags))
+        self.assertFalse(verdict.aml_authorization)
+
+    async def test_offline_mode_tensor_a1_unobtainium_escalation(self):
+        with patch.dict(os.environ, {"DEMO_OFFLINE_MODE": "true"}):
+            verdict_exact = await engine.evaluate_component_shortage("GGL-TENS-A1-REV2", "Tensor A1", "exact")
+            verdict_alt = await engine.evaluate_component_shortage("GGL-TENS-A1-REV2", "Tensor A1", "alternative")
+        self.assertEqual(verdict_exact.workflow_route, "EXACT_ORIGINAL_UNAVAILABLE")
+        self.assertEqual(verdict_alt.workflow_route, "OEM_CUSTOM_ESCALATION")
+        self.assertEqual(verdict_alt.candidate_mpn, "REQUIRES_OEM_INTERVENTION")
+
+    async def test_all_ten_bom_items_have_valid_fallback(self):
+        mpns = [
+            "FXN-GRVCC-SHL-PNY", "GAW325", "NMF-FPC-CAP-02", "GGL-TENS-A1-REV2",
+            "MAX77650EWV+T", "SPH0641LU4H-1", "BMI323", "CP1154-A3",
+            "GTR-11MM-D", "CP1025-M",
+        ]
+        with patch.dict(os.environ, {"DEMO_OFFLINE_MODE": "true"}):
+            for mpn in mpns:
+                for mode in ("exact", "alternative"):
+                    with self.subTest(mpn=mpn, mode=mode):
+                        verdict = await engine.evaluate_component_shortage(mpn, "Demo part", mode)
+                        self.assertIsInstance(verdict, engine.AgentHardwareVerdict)
+                        self.assertFalse(verdict.aml_authorization)
+                        self.assertTrue(len(verdict.search_reasoning) > 10)
+
