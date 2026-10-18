@@ -88,7 +88,7 @@ For Gemini research, edit the generated `backend\.env` (never commit it):
 ```dotenv
 GEMINI_API_KEY=your_key
 # Optional: ordered model IDs available to your account; at most two are attempted.
-GEMINI_MODELS=gemini-3-flash-preview,gemini-flash-lite-latest
+GEMINI_MODELS=gemini-3.8-flash
 ```
 
 In separate terminals:
@@ -121,7 +121,7 @@ The launcher prefers `backend\.venv`, checks dependencies, and waits for HTTP re
 | Variable | Purpose |
 |---|---|
 | `GEMINI_API_KEY` | Backend-only provider credential |
-| `GEMINI_MODELS` | Up to two ordered model IDs; availability depends on your account |
+| `GEMINI_MODELS` | Up to two ordered model IDs; defaults to `gemini-3.8-flash`; availability depends on your account |
 | `INVENTORY_DB_PATH` | Optional SQLite path; default `backend\data\inventory.sqlite3` |
 | `FRONTEND_ORIGINS` | Comma-separated CORS origins; defaults to localhost/127.0.0.1 port 3000 |
 | `NEXT_PUBLIC_API_BASE_URL` | Frontend API origin; defaults to `http://localhost:8080`; set before building |
@@ -133,7 +133,7 @@ The default mode is a **single-backend-worker, unauthenticated local demo**; do 
 1. Open the ERP simulator and select **Drop PMIC**. Stock becomes 40% of safety stock.
 2. Open a second tab. Its stock should match within about one polling interval.
 3. Use **Research exact part** or **Research alternatives**. Both dashboards have the same controls; selection/shortage actions do not automatically call Gemini.
-4. Review the actual model ID, evidence status, sources (if returned), uncalibrated confidence, timing, and limitations. A quota/tool/model failure is an explicit error, not an invented success.
+4. Review the actual model ID, evidence status, sources (if returned), uncalibrated confidence, timing, and limitations. A provider failure is an explicit error, not an invented success. HTTP 429 indicates rate/resource exhaustion, but does not by itself prove that account quota was used; check the selected model's active limits in Google AI Studio for the project associated with the API key.
 5. Stock must remain unchanged after research. Only explicit stock edits or **Reset All** change it.
 6. Open **PDF comparison**, select documents you have permission to process, and leave consent unchecked to extract locally.
 7. If you consent, the two extracted documents and board requirements are sent to Google Gemini. Each returned comparison requires quotations from both PDFs; nonexistent pages or quotations are rejected.

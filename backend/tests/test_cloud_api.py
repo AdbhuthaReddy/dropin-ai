@@ -78,13 +78,14 @@ class CloudApiTests(unittest.TestCase):
         self.assertNotIn("input", saved)
         self.assertNotIn("actor", saved)
 
-    def test_quota_failure_is_saved_not_fabricated(self):
-        with patch("app.services.workflow.run_workflow", side_effect=ProviderUnavailable("quota", reason="quota_exhausted")):
+    def test_rate_limit_failure_is_saved_not_fabricated(self):
+        with patch("app.services.workflow.run_workflow", side_effect=ProviderUnavailable("rate limited", reason="rate_limited")):
             self.assertEqual(self.drop().status_code, 200)
         item = self.item()
         self.assertEqual(item["stock"], 1000)
         self.assertEqual(item["workflow"]["stage"], "failed")
-        self.assertIn("quota exhausted", item["researchError"])
+        self.assertIn("HTTP 429", item["researchError"])
+        self.assertIn("does not by itself mean your account quota has been used", item["researchError"])
         self.assertIsNone(self.repo.job(item["workflow"]["job_id"])["result"])
 
     def test_resume_waits_for_lease_then_recovers_expired_work(self):

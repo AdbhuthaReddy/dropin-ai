@@ -131,10 +131,10 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
                 two_started.set()
             await release.wait()
             active -= 1
-            return SimpleNamespace(text='{"x":1}', candidates=[])
+            return SimpleNamespace(output_text='{"x":1}', steps=[])
 
         fake = MagicMock()
-        fake.models.generate_content = AsyncMock(side_effect=blocked)
+        fake.interactions.create = AsyncMock(side_effect=blocked)
         manager = MagicMock()
         manager.__aenter__ = AsyncMock(return_value=fake)
         manager.__aexit__ = AsyncMock(return_value=False)
@@ -156,14 +156,16 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_provider_evidence_and_model_are_retained(self):
         response = SimpleNamespace(
-            text=json.dumps(verdict_payload()),
-            candidates=[SimpleNamespace(grounding_metadata=SimpleNamespace(grounding_chunks=[
-                SimpleNamespace(web=SimpleNamespace(uri="https://manufacturer.example/datasheet", title="Manufacturer")),
-                SimpleNamespace(web=SimpleNamespace(uri="javascript:alert(1)", title="Unsafe")),
-            ]))],
+            output_text=json.dumps(verdict_payload()),
+            steps=[SimpleNamespace(type="model_output", content=[SimpleNamespace(
+                type="text", annotations=[
+                    SimpleNamespace(url="https://manufacturer.example/datasheet", title="Manufacturer"),
+                    SimpleNamespace(url="javascript:alert(1)", title="Unsafe"),
+                ],
+            )])],
         )
         fake = MagicMock()
-        fake.models.generate_content = AsyncMock(return_value=response)
+        fake.interactions.create = AsyncMock(return_value=response)
         manager = MagicMock()
         manager.__aenter__ = AsyncMock(return_value=fake)
         manager.__aexit__ = AsyncMock(return_value=False)
@@ -176,12 +178,13 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provenance.grounding_status, "search_evidence_returned")
         self.assertEqual(len(provenance.sources), 1)
         self.assertFalse(provenance.stock_verified)
-        self.assertTrue(fake.models.generate_content.call_args.kwargs["config"].tools)
+        self.assertEqual(fake.interactions.create.call_args.kwargs["tools"], [{"type": "google_search"}])
+        self.assertEqual(fake.interactions.create.call_args.kwargs["model"], "test-model")
         self.assertEqual(client.call_args.kwargs["http_options"].timeout, 20000)
 
     async def test_no_evidence_does_not_masquerade_as_grounded(self):
         fake = MagicMock()
-        fake.models.generate_content = AsyncMock(return_value=SimpleNamespace(text='{"x":1}', candidates=[]))
+        fake.interactions.create = AsyncMock(return_value=SimpleNamespace(output_text='{"x":1}', steps=[]))
         manager = MagicMock()
         manager.__aenter__ = AsyncMock(return_value=fake)
         manager.__aexit__ = AsyncMock(return_value=False)
@@ -193,8 +196,8 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_fallback_keeps_search_enabled(self):
         fake = MagicMock()
-        fake.models.generate_content = AsyncMock(side_effect=[
-            ValueError("Malformed response"), SimpleNamespace(text='{"x":1}', candidates=[]),
+        fake.interactions.create = AsyncMock(side_effect=[
+            ValueError("Malformed response"), SimpleNamespace(output_text='{"x":1}', steps=[]),
         ])
         manager = MagicMock()
         manager.__aenter__ = AsyncMock(return_value=fake)
@@ -204,13 +207,63 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             client.return_value.aio = manager
             _, provenance = await engine.generate_json("system", "prompt", search=True)
         self.assertEqual(provenance.model, "second")
-        self.assertTrue(all(call.kwargs["config"].tools for call in fake.models.generate_content.call_args_list))
+        self.assertTrue(all(
+            call.kwargs["tools"] == [{"type": "google_search"}]
+            for call in fake.interactions.create.call_args_list
+        ))
+
+    async def test_rate_limit_is_not_reported_as_exhausted_quota(self):
+        fake = MagicMock()
+        fake.interactions.create = AsyncMock(side_effect=[
+            engine.genai.errors.APIError(429, {
+                "error": {
+                    "code": 429,
+                    "status": "RESOURCE_EXHAUSTED",
+                    "message": "Request rate limit exceeded",
+                },
+            }),
+            engine.genai.errors.APIError(404, {
+                "error": {
+                    "code": 404,
+                    "status": "NOT_FOUND",
+                    "message": "Model not found",
+                },
+            }),
+        ])
+        manager = MagicMock()
+        manager.__aenter__ = AsyncMock(return_value=fake)
+        manager.__aexit__ = AsyncMock(return_value=False)
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test", "GEMINI_MODELS": "first,second"}), \
+             patch.object(engine.genai, "Client") as client:
+            client.return_value.aio = manager
+            with self.assertRaises(engine.ProviderUnavailable) as caught:
+                await engine.generate_json("system", "prompt", search=True)
+        self.assertEqual(caught.exception.reason, "rate_limited")
+
+    async def test_interactions_402_prepaid_credits_is_reported(self):
+        class PaymentRequiredError(Exception):
+            status_code = 402
+
+        fake = MagicMock()
+        fake.interactions.create = AsyncMock(side_effect=PaymentRequiredError(
+            "prepayment credits depleted",
+        ))
+        manager = MagicMock()
+        manager.__aenter__ = AsyncMock(return_value=fake)
+        manager.__aexit__ = AsyncMock(return_value=False)
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test", "GEMINI_MODELS": "first,second"}), \
+             patch.object(engine.genai, "Client") as client:
+            client.return_value.aio = manager
+            with self.assertRaises(engine.ProviderUnavailable) as caught:
+                await engine.generate_json("system", "prompt", search=True)
+        self.assertEqual(caught.exception.reason, "payment_required")
+        fake.interactions.create.assert_awaited_once()
 
     async def test_cancellation_propagates_to_async_provider(self):
         async def blocked(**kwargs):
             await asyncio.sleep(100)
         fake = MagicMock()
-        fake.models.generate_content = AsyncMock(side_effect=blocked)
+        fake.interactions.create = AsyncMock(side_effect=blocked)
         manager = MagicMock()
         manager.__aenter__ = AsyncMock(return_value=fake)
         manager.__aexit__ = AsyncMock(return_value=False)
@@ -222,3 +275,19 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
+
+    async def test_ungrounded_document_call_uses_generate_content(self):
+        fake = MagicMock()
+        fake.models.generate_content = AsyncMock(return_value=SimpleNamespace(
+            text='{"result":true}', candidates=[],
+        ))
+        manager = MagicMock()
+        manager.__aenter__ = AsyncMock(return_value=fake)
+        manager.__aexit__ = AsyncMock(return_value=False)
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test", "GEMINI_MODELS": "test-model"}), \
+             patch.object(engine.genai, "Client") as client:
+            client.return_value.aio = manager
+            parsed, provenance = await engine.generate_json("system", "prompt", search=False)
+        self.assertEqual(parsed, {"result": True})
+        self.assertEqual(provenance.grounding_status, "document_text")
+        self.assertEqual(fake.models.generate_content.call_args.kwargs["contents"], "prompt")
